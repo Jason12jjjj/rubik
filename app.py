@@ -1,6 +1,8 @@
 # ==============================================================================
 # RUBIK'S CUBE SOLVER - STREAMLIT INTERFACE (V5 - Ultimate UI/UX Version)
 # ==============================================================================
+import numpy as np
+import cv2
 import streamlit as st
 from rubiks_core import validate_cube_state, solve_cube
 
