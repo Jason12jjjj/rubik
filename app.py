@@ -1,5 +1,5 @@
 # ==============================================================================
-# RUBIK'S CUBE SOLVER - STREAMLIT INTERFACE (V4 - Ultimate User Friendly)
+# RUBIK'S CUBE SOLVER - STREAMLIT INTERFACE (V5 - Ultimate UI/UX Version)
 # ==============================================================================
 import streamlit as st
 from rubiks_core import validate_cube_state, solve_cube
@@ -10,22 +10,24 @@ st.set_page_config(page_title="AI Rubik's Solver", page_icon="🧊", layout="wid
 AVAILABLE_COLORS = ['White', 'Red', 'Green', 'Yellow', 'Orange', 'Blue']
 FACES = ['Up', 'Left', 'Front', 'Right', 'Back', 'Down']
 
-# UX UPGRADE 1: Color Emojis for faster visual recognition
 COLOR_EMOJIS = {
     'White': '⬜', 'Red': '🟥', 'Green': '🟩', 
     'Yellow': '🟨', 'Orange': '🟧', 'Blue': '🟦'
 }
 
-# Standard center colors
+# Real hex colors for the live mini-map
+HEX_COLORS = {
+    'White': '#f8f9fa', 'Red': '#ff4b4b', 'Green': '#09ab3b', 
+    'Yellow': '#ffeb3b', 'Orange': '#ffa500', 'Blue': '#1e88e5'
+}
+
 CENTER_COLORS = {
     'Up': 'White', 'Left': 'Orange', 'Front': 'Green', 
     'Right': 'Red', 'Back': 'Blue', 'Down': 'Yellow'
 }
 
-# UX UPGRADE 2: Strict Orientation Guides to prevent Parity Errors
-# This tells the user EXACTLY how to hold the cube for each face.
 ORIENTATION_GUIDE = {
-    'Up':    "Look at the **⬜ White Face**. Ensure the **🟦 Blue Center** is pointing UP (towards the ceiling).",
+    'Up':    "Look at the **⬜ White Face**. Ensure the **🟦 Blue Center** is pointing UP.",
     'Left':  "Look at the **🟧 Orange Face**. Ensure the **⬜ White Center** is pointing UP.",
     'Front': "Look at the **🟩 Green Face**. Ensure the **⬜ White Center** is pointing UP.",
     'Right': "Look at the **🟥 Red Face**. Ensure the **⬜ White Center** is pointing UP.",
@@ -46,12 +48,52 @@ def extract_colors_from_image(image_bytes, expected_center):
     dummy[4] = expected_center
     return dummy
 
-# --- 3. User Interface Design ---
-st.title("🧊 Rubik's Cube Solver (Pro Version)")
-st.markdown("""
-Welcome! To solve your cube, please input the colors for all 6 sides. 
-**⚠️ CRITICAL:** You must hold the cube exactly as instructed in the blue orientation box for each face!
-""")
+# --- 2. Live Mini-Map Generator (HTML/CSS) ---
+def render_live_map():
+    """Generates an HTML unfolded cube map that updates in real-time."""
+    html = '<div style="display: grid; grid-template-columns: repeat(4, 50px); gap: 5px; justify-content: center;">'
+    
+    # Mapping the faces to a 2D cross grid (Row, Col)
+    grid_positions = {
+        'Up': (1, 2), 'Left': (2, 1), 'Front': (2, 2), 
+        'Right': (2, 3), 'Back': (2, 4), 'Down': (3, 2)
+    }
+    
+    # Build 3x4 grid cells
+    for row in range(1, 4):
+        for col in range(1, 5):
+            found_face = None
+            for face, pos in grid_positions.items():
+                if pos == (row, col):
+                    found_face = face
+                    break
+            
+            if found_face:
+                # Draw the 3x3 face
+                html += '<div style="display: grid; grid-template-columns: repeat(3, 15px); gap: 1px;">'
+                for color in st.session_state.cube_state[found_face]:
+                    hex_c = HEX_COLORS[color]
+                    html += f'<div style="width: 15px; height: 15px; background-color: {hex_c}; border: 1px solid #444; border-radius: 2px;"></div>'
+                html += '</div>'
+            else:
+                # Empty space in the cross pattern
+                html += '<div></div>'
+                
+    html += '</div>'
+    return html
+
+# --- 3. Sidebar UI (The Live 3D/2D Guide) ---
+with st.sidebar:
+    st.markdown("## 🗺️ Live Cube Map")
+    st.write("Watch this map update as you click! This is how the AI sees your cube unfolded.")
+    st.components.v1.html(render_live_map(), height=250)
+    
+    st.divider()
+    st.markdown("### 💡 Pro Tip for Beginners")
+    st.info("Don't use dropdowns! Just **keep clicking the big squares** on the right to cycle through the colors quickly.")
+
+# --- 4. Main User Interface ---
+st.title("🧊 Rubik's Cube Solver")
 
 tabs = st.tabs([f"{COLOR_EMOJIS[CENTER_COLORS[f]]} {f} Face" for f in FACES])
 
@@ -59,9 +101,7 @@ for idx, tab in enumerate(tabs):
     current_face = FACES[idx]
     
     with tab:
-        # Display the explicit holding instruction
         st.info(f"🧭 **HOW TO HOLD:** {ORIENTATION_GUIDE[current_face]}")
-        
         col_camera, col_manual = st.columns([1, 1])
         
         with col_camera:
@@ -70,48 +110,49 @@ for idx, tab in enumerate(tabs):
             if img_buffer is not None:
                 detected = extract_colors_from_image(img_buffer, CENTER_COLORS[current_face])
                 st.session_state.cube_state[current_face] = detected
-                st.success(f"Scanned {current_face} face successfully!")
+                st.success("Scanned successfully!")
                 st.rerun()
                 
         with col_manual:
-            st.write(f"### 🖱️ Manual Edit")
-            st.write("Read the cube from **Left-to-Right, Top-to-Bottom**.")
+            st.write(f"### 🖱️ Click to Change Color")
             
-            grid_cols = st.columns(3)
-            for i in range(9):
-                col_idx = i % 3
-                with grid_cols[col_idx]:
-                    if i == 4:
-                        st.success(f"Center\n\n{COLOR_EMOJIS[CENTER_COLORS[current_face]]} **{CENTER_COLORS[current_face]}**")
-                    else:
-                        current_color = st.session_state.cube_state[current_face][i]
-                        new_color = st.selectbox(
-                            f"Tile {i+1}", 
-                            AVAILABLE_COLORS, 
-                            index=AVAILABLE_COLORS.index(current_color), 
-                            format_func=lambda x: f"{COLOR_EMOJIS[x]} {x}", # Adds emojis to the dropdown!
-                            key=f"manual_{current_face}_{i}"
-                        )
-                        st.session_state.cube_state[current_face][i] = new_color
+            # UX UPGRADE: Interactive Clickable Buttons instead of Dropdowns
+            for row in range(3):
+                cols = st.columns(3)
+                for col_idx in range(3):
+                    tile_idx = row * 3 + col_idx
+                    with cols[col_idx]:
+                        if tile_idx == 4:
+                            # Center is locked
+                            st.button(f"{COLOR_EMOJIS[CENTER_COLORS[current_face]]} Center", key=f"lock_{current_face}", disabled=True, use_container_width=True)
+                        else:
+                            # Click to cycle colors
+                            current_color = st.session_state.cube_state[current_face][tile_idx]
+                            button_label = f"{COLOR_EMOJIS[current_color]} {current_color}"
+                            
+                            if st.button(button_label, key=f"btn_{current_face}_{tile_idx}", use_container_width=True):
+                                # Logic to cycle to the next color
+                                current_index = AVAILABLE_COLORS.index(current_color)
+                                next_index = (current_index + 1) % len(AVAILABLE_COLORS)
+                                st.session_state.cube_state[current_face][tile_idx] = AVAILABLE_COLORS[next_index]
+                                st.rerun()
 
 st.divider()
 
-# --- 4. System Validation ---
+# --- 5. System Validation ---
 st.subheader("🚀 Final Step: Validation & Solution")
 
 if st.button("Validate All 6 Sides & Solve", type="primary", use_container_width=True):
     is_valid, validation_msg = validate_cube_state(st.session_state.cube_state)
     
     if is_valid:
-        with st.spinner("Executing Kociemba Algorithm..."):
+        with st.spinner("Executing Algorithm..."):
             solution = solve_cube(st.session_state.cube_state)
             if "Error" in solution:
                 st.error(solution)
-                st.warning("Hint: Did you hold the cube exactly as the blue instructions said? A rotated face causes this error!")
             else:
                 st.balloons()
                 st.success("🎉 Solution Found!")
                 st.markdown(f"### ➡️ Steps: `{solution}`")
     else:
         st.error(f"❌ Validation Failed: {validation_msg}")
-        st.warning("A real Rubik's cube must have exactly 9 tiles of each color. Check the tabs to find the mistake.")
