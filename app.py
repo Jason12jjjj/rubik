@@ -1,5 +1,5 @@
 # ==============================================================================
-# RUBIK'S CUBE SOLVER - STREAMLIT INTERFACE (V5 - Ultimate UI/UX Version)
+# RUBIK'S CUBE SOLVER - STREAMLIT INTERFACE (V6 - Final Perfect Alignment)
 # ==============================================================================
 import numpy as np
 import cv2
@@ -94,13 +94,11 @@ def render_live_map():
     """Generates an HTML unfolded cube map that updates in real-time."""
     html = '<div style="display: grid; grid-template-columns: repeat(4, 50px); gap: 5px; justify-content: center;">'
     
-    # Mapping the faces to a 2D cross grid (Row, Col)
     grid_positions = {
         'Up': (1, 2), 'Left': (2, 1), 'Front': (2, 2), 
         'Right': (2, 3), 'Back': (2, 4), 'Down': (3, 2)
     }
     
-    # Build 3x4 grid cells
     for row in range(1, 4):
         for col in range(1, 5):
             found_face = None
@@ -110,14 +108,12 @@ def render_live_map():
                     break
             
             if found_face:
-                # Draw the 3x3 face
                 html += '<div style="display: grid; grid-template-columns: repeat(3, 15px); gap: 1px;">'
                 for color in st.session_state.cube_state[found_face]:
                     hex_c = HEX_COLORS[color]
                     html += f'<div style="width: 15px; height: 15px; background-color: {hex_c}; border: 1px solid #444; border-radius: 2px;"></div>'
                 html += '</div>'
             else:
-                # Empty space in the cross pattern
                 html += '<div></div>'
                 
     html += '</div>'
@@ -145,7 +141,7 @@ for idx, tab in enumerate(tabs):
         st.info(f"🧭 **HOW TO HOLD:** {ORIENTATION_GUIDE[current_face]}")
         col_camera, col_manual = st.columns([1, 1])
         
-      with col_camera:
+        with col_camera:
             st.write(f"### 📷 Auto-Scan")
             img_buffer = st.camera_input("Take a picture", key=f"cam_{current_face}")
             if img_buffer is not None:
@@ -153,27 +149,23 @@ for idx, tab in enumerate(tabs):
                 st.session_state.cube_state[current_face] = detected
                 
                 st.image(debug_img, caption="AI Vision Debug View (Check the green circles!)", use_column_width=True)
-                st.success("Scanned successfully! Check the map on the right.")
+                st.success("Scanned successfully! Check the map on the left.")
                 
         with col_manual:
             st.write(f"### 🖱️ Click to Change Color")
             
-            # UX UPGRADE: Interactive Clickable Buttons instead of Dropdowns
             for row in range(3):
                 cols = st.columns(3)
                 for col_idx in range(3):
                     tile_idx = row * 3 + col_idx
                     with cols[col_idx]:
                         if tile_idx == 4:
-                            # Center is locked
                             st.button(f"{COLOR_EMOJIS[CENTER_COLORS[current_face]]} Center", key=f"lock_{current_face}", disabled=True, use_container_width=True)
                         else:
-                            # Click to cycle colors
                             current_color = st.session_state.cube_state[current_face][tile_idx]
                             button_label = f"{COLOR_EMOJIS[current_color]} {current_color}"
                             
                             if st.button(button_label, key=f"btn_{current_face}_{tile_idx}", use_container_width=True):
-                                # Logic to cycle to the next color
                                 current_index = AVAILABLE_COLORS.index(current_color)
                                 next_index = (current_index + 1) % len(AVAILABLE_COLORS)
                                 st.session_state.cube_state[current_face][tile_idx] = AVAILABLE_COLORS[next_index]
