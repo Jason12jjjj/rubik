@@ -1,5 +1,5 @@
 # ==============================================================================
-# RUBIK'S CUBE SOLVER - STREAMLIT INTERFACE (V6 - Final Perfect Alignment)
+# RUBIK'S CUBE SOLVER - STREAMLIT INTERFACE (V7 - Targeting Grid & Bug Fixes)
 # ==============================================================================
 import numpy as np
 import cv2
@@ -17,7 +17,6 @@ COLOR_EMOJIS = {
     'Yellow': '🟨', 'Orange': '🟧', 'Blue': '🟦'
 }
 
-# Real hex colors for the live mini-map
 HEX_COLORS = {
     'White': '#f8f9fa', 'Red': '#ff4b4b', 'Green': '#09ab3b', 
     'Yellow': '#ffeb3b', 'Orange': '#ffa500', 'Blue': '#1e88e5'
@@ -45,7 +44,7 @@ if 'cube_state' not in st.session_state:
         st.session_state.cube_state[face] = default_face
 
 def extract_colors_from_image(image_bytes, expected_center):
-    """Real Computer Vision logic with Visual Debugging."""
+    """Real CV with Targeting Grid and Improved Color Tolerance."""
     file_bytes = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, 1) 
     
@@ -57,17 +56,26 @@ def extract_colors_from_image(image_bytes, expected_center):
     start_y = (height - grid_size) // 2
     
     hsv_img = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    
     debug_img = img.copy()
     detected_colors = []
     
+    # 🌟 UX UPGRADE 1: Draw a 3x3 Targeting Grid for the user
+    cv2.rectangle(debug_img, (start_x, start_y), (start_x + grid_size, start_y + grid_size), (255, 255, 255), 3)
+    for i in range(1, 3):
+        cv2.line(debug_img, (start_x + i * cell_size, start_y), (start_x + i * cell_size, start_y + grid_size), (255, 255, 255), 2)
+        cv2.line(debug_img, (start_x, start_y + i * cell_size), (start_x + grid_size, start_y + i * cell_size), (255, 255, 255), 2)
+
     def get_color_name(h, s, v):
-        if s < 60 and v > 80: return 'White'
-        if 20 <= h <= 40 and s > 50: return 'Yellow'
-        elif 40 < h <= 85 and s > 50: return 'Green'
-        elif 85 < h <= 130 and s > 50: return 'Blue'
-        elif 5 <= h < 20 and s > 50: return 'Orange'
-        elif (0 <= h < 5 or 160 <= h <= 179) and s > 50: return 'Red'
+        # 🌟 CV UPGRADE: Lowered Saturation threshold to fix Yellow/Red becoming White
+        if s < 40: return 'White'  # Used to be 60
+        
+        # Adjusted Hue ranges
+        if 20 <= h <= 35: return 'Yellow'
+        elif 35 < h <= 85: return 'Green'
+        elif 85 < h <= 130: return 'Blue'
+        elif 5 <= h < 20: return 'Orange'
+        elif (0 <= h < 5 or 150 <= h <= 179): return 'Red'
+        
         return 'White' 
 
     for row in range(3):
@@ -80,32 +88,24 @@ def extract_colors_from_image(image_bytes, expected_center):
             color_name = get_color_name(avg_h, avg_s, avg_v)
             detected_colors.append(color_name)
             
-            cv2.circle(debug_img, (cx, cy), 8, (0, 255, 0), 2)
-            cv2.putText(debug_img, color_name, (cx-20, cy+25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            # Draw the AI sampling points
+            cv2.circle(debug_img, (cx, cy), 6, (0, 255, 0), -1)
+            cv2.putText(debug_img, color_name, (cx-25, cy+25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 3)
+            cv2.putText(debug_img, color_name, (cx-25, cy+25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             
     detected_colors[4] = expected_center
-    
     debug_img_rgb = cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB)
     
     return detected_colors, debug_img_rgb  
 
-# --- 2. Live Mini-Map Generator (HTML/CSS) ---
+# --- 2. Live Mini-Map Generator ---
 def render_live_map():
-    """Generates an HTML unfolded cube map that updates in real-time."""
     html = '<div style="display: grid; grid-template-columns: repeat(4, 50px); gap: 5px; justify-content: center;">'
-    
-    grid_positions = {
-        'Up': (1, 2), 'Left': (2, 1), 'Front': (2, 2), 
-        'Right': (2, 3), 'Back': (2, 4), 'Down': (3, 2)
-    }
+    grid_positions = {'Up': (1, 2), 'Left': (2, 1), 'Front': (2, 2), 'Right': (2, 3), 'Back': (2, 4), 'Down': (3, 2)}
     
     for row in range(1, 4):
         for col in range(1, 5):
-            found_face = None
-            for face, pos in grid_positions.items():
-                if pos == (row, col):
-                    found_face = face
-                    break
+            found_face = next((face for face, pos in grid_positions.items() if pos == (row, col)), None)
             
             if found_face:
                 html += '<div style="display: grid; grid-template-columns: repeat(3, 15px); gap: 1px;">'
@@ -115,19 +115,15 @@ def render_live_map():
                 html += '</div>'
             else:
                 html += '<div></div>'
-                
     html += '</div>'
     return html
 
-# --- 3. Sidebar UI (The Live 3D/2D Guide) ---
+# --- 3. Sidebar UI ---
 with st.sidebar:
     st.markdown("## 🗺️ Live Cube Map")
-    st.write("Watch this map update as you click! This is how the AI sees your cube unfolded.")
     st.components.v1.html(render_live_map(), height=250)
-    
     st.divider()
-    st.markdown("### 💡 Pro Tip for Beginners")
-    st.info("Don't use dropdowns! Just **keep clicking the big squares** on the right to cycle through the colors quickly.")
+    st.info("💡 **Tip:** AI saw it wrong? Just click the colored buttons on the right to fix it instantly!")
 
 # --- 4. Main User Interface ---
 st.title("🧊 Rubik's Cube Solver")
@@ -144,23 +140,29 @@ for idx, tab in enumerate(tabs):
         with col_camera:
             st.write(f"### 📷 Auto-Scan")
             img_buffer = st.camera_input("Take a picture", key=f"cam_{current_face}")
+            
+            # 🌟 LOGIC UPGRADE: Only process if it's a NEW photo (Fixes the state overwrite bug)
             if img_buffer is not None:
-                detected, debug_img = extract_colors_from_image(img_buffer, CENTER_COLORS[current_face])
-                st.session_state.cube_state[current_face] = detected
+                if st.session_state.get(f"processed_{current_face}") != img_buffer.file_id:
+                    detected, debug_img = extract_colors_from_image(img_buffer, CENTER_COLORS[current_face])
+                    st.session_state.cube_state[current_face] = detected
+                    st.session_state[f"debug_img_{current_face}"] = debug_img
+                    st.session_state[f"processed_{current_face}"] = img_buffer.file_id
+                    st.rerun() # Refresh to update the map
                 
-                st.image(debug_img, caption="AI Vision Debug View (Check the green circles!)", use_column_width=True)
-                st.success("Scanned successfully! Check the map on the left.")
+                # Show the saved image for this specific tab
+                if f"debug_img_{current_face}" in st.session_state:
+                    st.image(st.session_state[f"debug_img_{current_face}"], caption="Targeting Grid - Align your cube inside the white box!", use_column_width=True)
                 
         with col_manual:
-            st.write(f"### 🖱️ Click to Change Color")
-            
+            st.write(f"### 🖱️ Manual Override")
             for row in range(3):
                 cols = st.columns(3)
                 for col_idx in range(3):
                     tile_idx = row * 3 + col_idx
                     with cols[col_idx]:
                         if tile_idx == 4:
-                            st.button(f"{COLOR_EMOJIS[CENTER_COLORS[current_face]]} Center", key=f"lock_{current_face}", disabled=True, use_container_width=True)
+                            st.button(f"{COLOR_EMOJIS[CENTER_COLORS[current_face]]} Ctr", key=f"lock_{current_face}", disabled=True, use_container_width=True)
                         else:
                             current_color = st.session_state.cube_state[current_face][tile_idx]
                             button_label = f"{COLOR_EMOJIS[current_color]} {current_color}"
@@ -175,10 +177,8 @@ st.divider()
 
 # --- 5. System Validation ---
 st.subheader("🚀 Final Step: Validation & Solution")
-
 if st.button("Validate All 6 Sides & Solve", type="primary", use_container_width=True):
     is_valid, validation_msg = validate_cube_state(st.session_state.cube_state)
-    
     if is_valid:
         with st.spinner("Executing Algorithm..."):
             solution = solve_cube(st.session_state.cube_state)
