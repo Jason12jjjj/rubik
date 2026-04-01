@@ -121,9 +121,9 @@ def render_live_map():
 
 with st.sidebar:
     st.markdown("## 🗺️ Live Cube Map")
-    st.components.v1.html(render_live_map(), height=250)
+    st.markdown(render_live_map(), unsafe_allow_html=True) 
     st.info("💡 **Demo Strategy:** If the AI misidentifies a color due to room lighting, just click the buttons on the right to manually fix it!")
-
+    
 # --- 4. Main User Interface ---
 st.title("🧊 AI Rubik's Solver")
 
