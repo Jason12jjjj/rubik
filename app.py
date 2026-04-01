@@ -57,50 +57,70 @@ def extract_colors_from_image(image_bytes, expected_center):
     img = cv2.imdecode(file_bytes, 1) 
     
     height, width, _ = img.shape
-    # Match the CSS grid size roughly (taking central portion)
     grid_size = min(height, width) // 2 
     cell_size = grid_size // 3
     
     start_x = (width - grid_size) // 2
     start_y = (height - grid_size) // 2
     
-    hsv_img = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     debug_img = img.copy()
     detected_colors = []
     
-    # Draw AI's thought process box on the debug image
     cv2.rectangle(debug_img, (start_x, start_y), (start_x + grid_size, start_y + grid_size), (255, 255, 255), 3)
     for i in range(1, 3):
         cv2.line(debug_img, (start_x + i * cell_size, start_y), (start_x + i * cell_size, start_y + grid_size), (255, 255, 255), 2)
         cv2.line(debug_img, (start_x, start_y + i * cell_size), (start_x + grid_size, start_y + i * cell_size), (255, 255, 255), 2)
 
-    def get_color_name(h, s, v):
-        if s < 45: return 'White'  # Strict white threshold to fix shadow issues
-        if 20 <= h <= 38: return 'Yellow'
-        elif 38 < h <= 85: return 'Green'
-        elif 85 < h <= 130: return 'Blue'
-        elif 5 <= h < 20: return 'Orange'
-        elif (0 <= h < 5 or 160 <= h <= 179): return 'Red'
-        return 'White' 
+    standard_colors_bgr = {
+        'White': [220, 220, 220],
+        'Yellow': [0, 210, 230],
+        'Orange': [0, 100, 240],
+        'Red': [20, 20, 200],
+        'Green': [50, 180, 50],
+        'Blue': [180, 50, 50]
+    }
+    
+    standard_colors_lab = {}
+    for name, bgr in standard_colors_bgr.items():
+        lab_val = cv2.cvtColor(np.uint8([[bgr]]), cv2.COLOR_BGR2LAB)[0][0]
+        standard_colors_lab[name] = lab_val
 
     for row in range(3):
         for col in range(3):
             cx = start_x + (col * cell_size) + (cell_size // 2)
             cy = start_y + (row * cell_size) + (cell_size // 2)
             
-            roi = hsv_img[cy-5:cy+5, cx-5:cx+5]
-            avg_h, avg_s, avg_v = np.median(roi, axis=(0, 1)).astype(int)
-            color_name = get_color_name(avg_h, avg_s, avg_v)
-            detected_colors.append(color_name)
+            roi_bgr = img[cy-5:cy+5, cx-5:cx+5]
+            avg_b, avg_g, avg_r = np.median(roi_bgr, axis=(0, 1)).astype(np.uint8)
+            
+            pixel_bgr = np.uint8([[[avg_b, avg_g, avg_r]]])
+            pixel_lab = cv2.cvtColor(pixel_bgr, cv2.COLOR_BGR2LAB)[0][0]
+            L_img, a_img, b_img = pixel_lab
+            
+            min_dist = float('inf')
+            best_color = 'White'
+            
+            for color_name, std_lab in standard_colors_lab.items():
+                L_std, a_std, b_std = std_lab
+                
+                dist = np.sqrt(0.3 * (int(L_img) - int(L_std))**2 + 
+                                     (int(a_img) - int(a_std))**2 + 
+                                     (int(b_img) - int(b_std))**2)
+                
+                if dist < min_dist:
+                    min_dist = dist
+                    best_color = color_name
+                    
+            detected_colors.append(best_color)
             
             cv2.circle(debug_img, (cx, cy), 8, (0, 255, 0), -1)
-            cv2.putText(debug_img, color_name, (cx-20, cy+25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 3)
-            cv2.putText(debug_img, color_name, (cx-20, cy+25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            cv2.putText(debug_img, best_color, (cx-20, cy+25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 3)
+            cv2.putText(debug_img, best_color, (cx-20, cy+25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             
     detected_colors[4] = expected_center
     debug_img_rgb = cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB)
     
-    return detected_colors, debug_img_rgb  
+    return detected_colors, debug_img_rgb
 
 # --- 3. Live Mini-Map ---
 def render_live_map():
