@@ -45,67 +45,49 @@ if 'cube_state' not in st.session_state:
         st.session_state.cube_state[face] = default_face
 
 def extract_colors_from_image(image_bytes, expected_center):
-    """
-    Real Computer Vision logic using OpenCV and HSV color space.
-    Reads the center of the camera image and maps it to a 3x3 grid.
-    """
-    # 1. Convert the Streamlit image bytes into an OpenCV Image (NumPy array)
+    """Real Computer Vision logic with Visual Debugging."""
     file_bytes = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
-    img = cv2.imdecode(file_bytes, 1) # Read as BGR image
+    img = cv2.imdecode(file_bytes, 1) 
     
-    # 2. Get the dimensions of the image
     height, width, _ = img.shape
-    
-    # 3. Define the bounding box for our 3x3 grid (Assuming the cube is held in the center)
-    # We take the smaller dimension to make a perfect square in the middle
     grid_size = min(height, width) // 2 
     cell_size = grid_size // 3
     
     start_x = (width - grid_size) // 2
     start_y = (height - grid_size) // 2
     
-    # 4. Convert the image from BGR to HSV for robust color detection
     hsv_img = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     
+    debug_img = img.copy()
     detected_colors = []
     
-    # --- Color Classification Logic ---
     def get_color_name(h, s, v):
-        # White has very low saturation but high brightness
-        if s < 60 and v > 90: return 'White'
-        
-        # Color mapping based on Hue (H)
-        if 20 <= h <= 40 and s > 60: return 'Yellow'
-        elif 40 < h <= 85 and s > 60: return 'Green'
-        elif 85 < h <= 130 and s > 60: return 'Blue'
-        elif 5 <= h < 20 and s > 60: return 'Orange'
-        # Red is tricky because its Hue wraps around 0 and 180
-        elif (0 <= h < 5 or 160 <= h <= 179) and s > 60: return 'Red'
-        
-        # Fallback if the color is weird (shadows etc.)
+        if s < 60 and v > 80: return 'White'
+        if 20 <= h <= 40 and s > 50: return 'Yellow'
+        elif 40 < h <= 85 and s > 50: return 'Green'
+        elif 85 < h <= 130 and s > 50: return 'Blue'
+        elif 5 <= h < 20 and s > 50: return 'Orange'
+        elif (0 <= h < 5 or 160 <= h <= 179) and s > 50: return 'Red'
         return 'White' 
 
-    # 5. Extract colors from the 9 center tiles
     for row in range(3):
         for col in range(3):
-            # Find the center coordinate of each small tile
             cx = start_x + (col * cell_size) + (cell_size // 2)
             cy = start_y + (row * cell_size) + (cell_size // 2)
             
-            # Instead of taking 1 pixel, we take a 5x5 Region of Interest (ROI) 
-            # and calculate the median to ignore camera noise
             roi = hsv_img[cy-5:cy+5, cx-5:cx+5]
             avg_h, avg_s, avg_v = np.median(roi, axis=(0, 1)).astype(int)
-            
-            # Classify the color and add to our list
             color_name = get_color_name(avg_h, avg_s, avg_v)
             detected_colors.append(color_name)
             
-    # 6. BUSINESS RULE: The center piece (index 4) physically cannot move.
-    # We overwrite whatever the AI saw with the mathematically expected center.
+            cv2.circle(debug_img, (cx, cy), 8, (0, 255, 0), 2)
+            cv2.putText(debug_img, color_name, (cx-20, cy+25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            
     detected_colors[4] = expected_center
     
-    return detected_colors
+    debug_img_rgb = cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB)
+    
+    return detected_colors, debug_img_rgb  
 
 # --- 2. Live Mini-Map Generator (HTML/CSS) ---
 def render_live_map():
