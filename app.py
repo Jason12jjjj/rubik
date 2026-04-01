@@ -145,14 +145,15 @@ for idx, tab in enumerate(tabs):
         st.info(f"🧭 **HOW TO HOLD:** {ORIENTATION_GUIDE[current_face]}")
         col_camera, col_manual = st.columns([1, 1])
         
-        with col_camera:
+      with col_camera:
             st.write(f"### 📷 Auto-Scan")
             img_buffer = st.camera_input("Take a picture", key=f"cam_{current_face}")
             if img_buffer is not None:
-                detected = extract_colors_from_image(img_buffer, CENTER_COLORS[current_face])
+                detected, debug_img = extract_colors_from_image(img_buffer, CENTER_COLORS[current_face])
                 st.session_state.cube_state[current_face] = detected
-                st.success("Scanned successfully!")
-                st.rerun()
+                
+                st.image(debug_img, caption="AI Vision Debug View (Check the green circles!)", use_column_width=True)
+                st.success("Scanned successfully! Check the map on the right.")
                 
         with col_manual:
             st.write(f"### 🖱️ Click to Change Color")
