@@ -81,43 +81,33 @@ def extract_colors_from_image(image_bytes, expected_center):
             roi_bgr = img[cy-5:cy+5, cx-5:cx+5]
             avg_b, avg_g, avg_r = np.median(roi_bgr, axis=(0, 1)).astype(np.uint8)
             
-            # Convert to int to avoid uint8 overflow under/over-flows
-            b, g, r = int(avg_b), int(avg_g), int(avg_r)
+            # Adaptive Saturation Threshold to combat WebCam Lighting Quirks!
+            pixel_bgr = np.uint8([[[avg_b, avg_g, avg_r]]])
+            hsv = cv2.cvtColor(pixel_bgr, cv2.COLOR_BGR2HSV)[0][0]
+            h, s, v = hsv
             
-            # Robust Rule-Based Color Classification using Relative Channel Differences
-            # 1. True neutral white/gray
-            if abs(r - g) < 30 and abs(g - b) < 30 and abs(r - b) < 30:
+            # 1. Warm light pushes White into the Red/Orange spectrum (0 < H < 25).
+            # By requiring a much higher saturation (S > 130) to qualify as a "real" Red/Orange,
+            # we safely trap warm White tiles.
+            if (h < 25 or h > 165) and s < 130:
                 best_color = 'White'
-            # 2. Warm or dim white (lighting causes yellow/orange tint but channels are still close)
-            elif r > 100 and g > 100 and b > 80 and abs(r - g) < 50 and (r - b) < 70 and (g - b) < 70:
+            # 2. Washed out Yellow (H ~ 30) loses saturation but rarely drops below S=60.
+            # So a strict S < 60 check for the rest of the hues prevents washed Yellow from becoming White.
+            elif s < 60:
                 best_color = 'White'
-            # 3. Yellow (High Red and Green, significantly lower Blue)
-            elif abs(r - g) < 60 and (r - b) > 50 and (g - b) > 50:
-                best_color = 'Yellow'
-            # 4. Orange (High Red, Medium Green, Low Blue)
-            elif (r - g) > 35 and (g - b) > 15 and (r - b) > 60:
-                best_color = 'Orange'
-            # 5. Red (High Red, Low Green and Blue)
-            elif (r - g) > 50 and (r - b) > 50 and abs(g - b) < 60:
+            # 3. Standard Hue mapping
+            elif h < 10 or h > 165:
                 best_color = 'Red'
-            # 6. Green (High Green, Low Red and Blue)
-            elif (g - r) > 30 and (g - b) > 20:
+            elif h < 25:
+                best_color = 'Orange'
+            elif h < 45:
+                best_color = 'Yellow'
+            elif h < 85:
                 best_color = 'Green'
-            # 7. Blue (High Blue, Low Red and Green)
-            elif (b - r) > 30 and (b - g) > 20:
+            elif h < 140:
                 best_color = 'Blue'
             else:
-                # Fallback to HSV if heuristics leave an edge case
-                pixel_bgr = np.uint8([[[avg_b, avg_g, avg_r]]])
-                hsv = cv2.cvtColor(pixel_bgr, cv2.COLOR_BGR2HSV)[0][0]
-                h, s, v = hsv
-                if s < 50: best_color = 'White'
-                elif h < 10 or h > 165: best_color = 'Red'
-                elif h < 25: best_color = 'Orange'
-                elif h < 45: best_color = 'Yellow'
-                elif h < 85: best_color = 'Green'
-                elif h < 140: best_color = 'Blue'
-                else: best_color = 'Red'
+                best_color = 'Red' # Fallback
                 
             detected_colors.append(best_color)
             
