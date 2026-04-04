@@ -330,41 +330,35 @@ def render_3d_solution(solution_str, speed):
 DEFAULT_FACE_COLORS = {face: (['White'] * 4 + [CENTER_COLORS[face]] + ['White'] * 4) for face in FACES}
 
 def render_live_map(active_face=None):
-    # Grouping faces by their physical opposites makes it easier to mentally map
-    pairs = [('Up', 'Down'), ('Front', 'Back'), ('Left', 'Right')]
-    html = '<div style="display:flex; flex-direction:column; gap:16px; font-family:sans-serif; margin-top:8px;">'
-    for f1, f2 in pairs:
-        html += '<div style="display:flex; justify-content:space-evenly; width:100%;">'
-        for face in (f1, f2):
-            colors      = st.session_state.cube_state[face]
-            is_active   = (face == active_face)
-            is_scanned  = (face in st.session_state.processed_photos)
+    grid_positions = {'Up':(1,2),'Left':(2,1),'Front':(2,2),'Right':(2,3),'Back':(2,4),'Down':(3,2)}
+    # 4 columns, each around 68px wide
+    html = '<div style="display:grid;grid-template-columns:repeat(4,68px);gap:6px;justify-content:center;text-align:center;font-family:sans-serif;margin-top:8px;">'
+    for row in range(1, 4):
+        for col in range(1, 5):
+            found = next((f for f, p in grid_positions.items() if p == (row, col)), None)
+            if found:
+                colors      = st.session_state.cube_state[found]
+                is_active   = (found == active_face)
+                is_scanned  = (found in st.session_state.processed_photos)
+                center_emoji = COLOR_EMOJIS[CENTER_COLORS[found]]
 
-            if is_scanned and is_active:
-                status = "🎯 ✅"
-            elif is_scanned:
-                status = "✅"
-            elif is_active:
-                status = "🎯"
+                border_style = ("3px solid #00e5ff; box-shadow: 0 0 10px #00e5ff;"
+                                if is_active else "1px solid rgba(255,255,255,0.2);")
+                opacity = "1.0" if (is_scanned or is_active) else "0.35"
+                status_dot = "✅" if is_scanned else ""
+
+                html += (f'<div style="opacity:{opacity}; display:flex; flex-direction:column; align-items:center;">'
+                         f'<div style="font-size:11px;font-weight:bold;color:{"#00e5ff" if is_active else "#ddd"};'
+                         f'margin-bottom:2px;">{center_emoji} {found} {status_dot}</div>'
+                         f'<div style="font-size:10px; color:#ffeb3b; padding-bottom:1px; line-height:1;">⬆️ Top</div>'
+                         f'<div style="display:grid;grid-template-columns:repeat(3,20px);gap:2px;justify-content:center;'
+                         f'border:{border_style};border-radius:4px;padding:3px;background:rgba(0,0,0,0.25);">')
+                for color in colors:
+                    html += (f'<div style="width:20px;height:20px;background-color:{HEX_COLORS[color]};'
+                             f'border:1px solid rgba(0,0,0,0.4);border-radius:2px;"></div>')
+                html += '</div></div>'
             else:
-                status = "⏳"
-
-            border_style = ("3px solid #00e5ff; box-shadow: 0 0 12px rgba(0,229,255,0.6);"
-                            if is_active else "2px solid rgba(255,255,255,0.15);")
-            opacity = "1.0" if (is_scanned or is_active) else "0.35"
-
-            html += (f'<div style="opacity:{opacity}; display:flex; flex-direction:column; align-items:center; width: 45%;">'
-                     f'<div style="font-size:13px; font-weight:600; padding-bottom:4px; color:{"#00e5ff" if is_active else "#ddd"};">'
-                     f'{status} {face}'
-                     f'</div>'
-                     f'<div style="display:grid;grid-template-columns:repeat(3,26px);gap:3px;justify-content:center;align-items:center;'
-                     f'border:{border_style};border-radius:6px;padding:4px;background:rgba(0,0,0,0.25);">'
-                     )
-            for color in colors:
-                html += (f'<div style="width:26px;height:26px;background-color:{HEX_COLORS[color]};'
-                         f'border:1px solid rgba(0,0,0,0.4);border-radius:3px;"></div>')
-            html += '</div></div>'
-        html += '</div>'
+                html += '<div></div>'
     html += '</div>'
     return html
 
