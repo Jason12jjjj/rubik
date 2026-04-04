@@ -47,11 +47,11 @@ if 'cube_size' not in st.session_state:
 c_size = st.session_state.get('cube_size', 50)
 st.markdown(f"""
 <style>
-    [data-testid="stCameraInput"] {
+    [data-testid="stCameraInput"] {{
         position: relative;
-    }
+    }}
     /* Bind the grid directly to the camera container and elevate z-index */
-    [data-testid="stCameraInput"]::after {
+    [data-testid="stCameraInput"]::after {{
         content: "";
         display: block;
         position: absolute;
@@ -74,7 +74,7 @@ st.markdown(f"""
             linear-gradient(to right, transparent 66.66%, rgba(0, 255, 0, 0.7) 66.66%, rgba(0, 255, 0, 0.7) calc(66.66% + 2px), transparent calc(66.66% + 2px)),
             linear-gradient(to bottom, transparent 33.33%, rgba(0, 255, 0, 0.7) 33.33%, rgba(0, 255, 0, 0.7) calc(33.33% + 2px), transparent calc(33.33% + 2px)),
             linear-gradient(to bottom, transparent 66.66%, rgba(0, 255, 0, 0.7) 66.66%, rgba(0, 255, 0, 0.7) calc(66.66% + 2px), transparent calc(66.66% + 2px));
-    }
+    }}
 </style>
 """, unsafe_allow_html=True)
 
