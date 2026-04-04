@@ -113,53 +113,64 @@ def auto_advance(nf):
 # ─────────────────────────────────────────────────────────────────────────────
 def auto_detect_cube_region(img):
     h_img, w_img = img.shape[:2]
+    min_area   = (min(h_img, w_img) * 0.18) ** 2
+    max_area   = (min(h_img, w_img) * 0.99) ** 2 # Relaxed to 0.99 for tightly cropped photos
+
+    def score_contours(cnts):
+        best = None
+        best_score = 0
+        for cnt in cnts:
+            area = cv2.contourArea(cnt)
+            if area < min_area or area > max_area:
+                continue
+
+            peri   = cv2.arcLength(cnt, True)
+            approx = cv2.approxPolyDP(cnt, 0.04 * peri, True)
+            x, y, w, bh = cv2.boundingRect(cnt)
+
+            aspect = min(w, bh) / max(w, bh)
+            if aspect < 0.65:
+                continue
+
+            side = int(min(w, bh) * 0.95)
+            if side <= 0:
+                continue
+
+            shape_bonus = 1.3 if 4 <= len(approx) <= 6 else 1.0
+            score       = area * aspect * shape_bonus
+
+            if score > best_score:
+                best_score = score
+                cx  = x + w  // 2
+                cy  = y + bh // 2
+                sx  = max(0, cx - side // 2)
+                sy  = max(0, cy - side // 2)
+                sx  = min(sx, w_img - side)
+                sy  = min(sy, h_img - side)
+                best = (sx, sy, side)
+        return best
+
+    # ── Pass 1: Saturation Masking (Best for coloured faces) ──
     hsv      = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     mask_sat = cv2.inRange(hsv, (0, 40, 40), (180, 255, 255))
-
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
     clean  = cv2.morphologyEx(mask_sat, cv2.MORPH_CLOSE, kernel, iterations=3)
     clean  = cv2.morphologyEx(clean,   cv2.MORPH_OPEN,  kernel, iterations=2)
-
     cnts, _ = cv2.findContours(clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not cnts:
-        return None
+    
+    best_region = score_contours(cnts)
+    if best_region is not None:
+        return best_region
 
-    best       = None
-    best_score = 0
-    min_area   = (min(h_img, w_img) * 0.18) ** 2
-    max_area   = (min(h_img, w_img) * 0.96) ** 2
-
-    for cnt in cnts:
-        area = cv2.contourArea(cnt)
-        if area < min_area or area > max_area:
-            continue
-
-        peri   = cv2.arcLength(cnt, True)
-        approx = cv2.approxPolyDP(cnt, 0.04 * peri, True)
-        x, y, w, bh = cv2.boundingRect(cnt)
-
-        aspect = min(w, bh) / max(w, bh)
-        if aspect < 0.65:
-            continue
-
-        side = int(min(w, bh) * 0.95)
-        if side <= 0:
-            continue
-
-        shape_bonus = 1.3 if 4 <= len(approx) <= 6 else 1.0
-        score       = area * aspect * shape_bonus
-
-        if score > best_score:
-            best_score = score
-            cx  = x + w  // 2
-            cy  = y + bh // 2
-            sx  = max(0, cx - side // 2)
-            sy  = max(0, cy - side // 2)
-            sx  = min(sx, w_img - side)
-            sy  = min(sy, h_img - side)
-            best = (sx, sy, side)
-
-    return best
+    # ── Pass 2: Edge Detection Fallback (Best for White face or low saturation) ──
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, 30, 150)
+    kernel_edge = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    closed_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel_edge, iterations=2)
+    cnts_edge, _ = cv2.findContours(closed_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    return score_contours(cnts_edge)
 
 
 def get_calibrated_colors():
@@ -212,16 +223,26 @@ def extract_colors_from_image(image_bytes, expected_center):
         region = auto_detect_cube_region(img)
 
     if region is None:
-        grid_scale = st.session_state.get('cube_size', 50)
-        grid_size  = int(min(h_img, w_img) * (grid_scale / 100.0))
-        start_x    = (w_img - grid_size) // 2
-        start_y    = (h_img - grid_size) // 2
-        detection_method = "manual"
+        if st.session_state.get('auto_detect', True):
+            # If Auto-Detect was requested but algorithms couldn't find a crisp outline
+            # (e.g. image is perfectly cropped, blurry, or very close up),
+            # fallback to assuming the cube heavily dominates the frame (90%).
+            grid_size  = int(min(h_img, w_img) * 0.90)
+            start_x    = (w_img - grid_size) // 2
+            start_y    = (h_img - grid_size) // 2
+            detection_method = "auto"
+        else:
+            grid_scale = st.session_state.get('cube_size', 50)
+            grid_size  = int(min(h_img, w_img) * (grid_scale / 100.0))
+            start_x    = (w_img - grid_size) // 2
+            start_y    = (h_img - grid_size) // 2
+            detection_method = "manual"
     else:
         start_x, start_y, grid_size = region
         detection_method = "auto"
 
     cell_size = max(1, grid_size // 3)
+    # When auto is active, always use a Green box.
     color_box = (0, 255, 0) if detection_method == "auto" else (255, 255, 255)
 
     cv2.rectangle(debug_img,
@@ -572,13 +593,15 @@ elif app_mode == "⚙️ Tune Colors":
 
         # ── Photo Memory Bridge ──────────────────────────────────────────────
         if target_face:
-            st.markdown("---")
-            use_for_scan = st.checkbox(
-                f"📌 **Also use this photo as the {COLOR_EMOJIS[calib_color]} {target_face} Face scan in Scan & Solve**",
-                value=(target_face in st.session_state.shared_face_images),
-                key=f"bridge_{calib_color}",
-                help=(f"Tick this to pre-load this photo into Scan & Solve for the {target_face} face — no double upload needed!")
-            )
+            st.markdown("<br>", unsafe_allow_html=True)
+            with st.container(border=True):
+                st.markdown(f"### 🔀 Quick Share to {target_face} Face")
+                st.write(f"Save time! Send this exact photo directly to the scanner so you don't have to upload it twice.")
+                use_for_scan = st.checkbox(
+                    f"📌 **Yes, also use this photo as the {COLOR_EMOJIS[calib_color]} {target_face} Face scan**",
+                    value=(target_face in st.session_state.shared_face_images),
+                    key=f"bridge_{calib_color}"
+                )
 
             if use_for_scan:
                 if st.session_state.shared_face_images.get(target_face) != raw_bytes:
@@ -634,15 +657,19 @@ elif app_mode == "⚙️ Tune Colors":
             st.caption(f"HSV: [{h}, {s}, {v}]")
             st.caption(f"RGB: [{int(avg_r)}, {int(avg_g)}, {int(avg_b)}]")
 
-        if st.button(f"✅ Save as standard for {calib_color}", type="primary"):
-            # FIX #5: Save to session state AND physically to JSON file
-            st.session_state.custom_std_colors[calib_color] = [h, s, v]
-            try:
-                with open(CALIB_FILE, 'w') as f:
-                    json.dump(st.session_state.custom_std_colors, f)
-            except Exception as e:
-                st.error(f"Failed to save profile: {e}")
+        st.markdown("<br>", unsafe_allow_html=True)
+        with st.container(border=True):
+            st.markdown("### 💾 Save Calibration Profile")
+            st.write("Happy with the target? Save this lighting profile permanently.")
+            if st.button(f"✅ Save HSV [{h}, {s}, {v}] as standard for {calib_color}", type="primary", use_container_width=True):
+                # FIX #5: Save to session state AND physically to JSON file
+                st.session_state.custom_std_colors[calib_color] = [h, s, v]
+                try:
+                    with open(CALIB_FILE, 'w') as f:
+                        json.dump(st.session_state.custom_std_colors, f)
+                except Exception as e:
+                    st.error(f"Failed to save profile: {e}")
 
-        if (calib_color in st.session_state.custom_std_colors
-                and tuple(st.session_state.custom_std_colors[calib_color]) == (h, s, v)):
-            st.success(f"🎉 AI has learned your {calib_color} profile! Parameters saved permanently.")
+            if (calib_color in st.session_state.custom_std_colors
+                    and tuple(st.session_state.custom_std_colors[calib_color]) == (h, s, v)):
+                st.success(f"🎉 AI has learned your {calib_color} profile! Parameters saved permanently.")
