@@ -209,6 +209,10 @@ if app_mode == "📸 Scan & Solve":
     # Use a single global camera to prevent browser freezing with multiple video streams
     current_face = st.radio("🧭 **Select which face you are scanning:**", FACES, format_func=lambda x: f"{COLOR_EMOJIS[CENTER_COLORS[x]]} {x} Face", horizontal=True)
 
+    if st.session_state.get('last_scanned_face') != current_face:
+        st.session_state.last_scanned_face = current_face
+        st.session_state.scanner_id = st.session_state.get('scanner_id', 0) + 1
+
     st.info(f"🧭 **HOW TO HOLD:** {ORIENTATION_GUIDE[current_face]}")
 
     col_camera, col_manual = st.columns([1, 1])
@@ -219,11 +223,12 @@ if app_mode == "📸 Scan & Solve":
         
         input_method = st.radio("Input Method:", ["📹 Live Camera", "📂 Upload Photo"], horizontal=True, label_visibility="collapsed", key="scan_method")
         
-        # Binding the key to current_face automatically clears the photo when switching faces
+        # Use a dynamic key dependent on scanner_id so it hard-resets when switching faces
+        scan_id = st.session_state.get('scanner_id', 0)
         if input_method == "📹 Live Camera":
-            img_buffer = st.camera_input("Take a picture", key=f"cam_{current_face}")
+            img_buffer = st.camera_input("Take a picture", key=f"cam_{current_face}_{scan_id}")
         else:
-            img_buffer = st.file_uploader("Upload face image", type=['png', 'jpg', 'jpeg'], key=f"up_{current_face}")
+            img_buffer = st.file_uploader("Upload face image", type=['png', 'jpg', 'jpeg'], key=f"up_{current_face}_{scan_id}")
         
         # We also need to track WHICH face this photo was applied to
         if img_buffer is not None:
