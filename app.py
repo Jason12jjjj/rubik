@@ -1,5 +1,5 @@
 # ==============================================================================
-# RUBIK'S CUBE SOLVER - DEMO SAFE VERSION (Stable Camera + CSS Targeting + Fixed Map)
+# RUBIK'S CUBE SOLVER 
 # ==============================================================================
 import numpy as np
 import cv2
@@ -17,12 +17,12 @@ HEX_COLORS = {'White': '#f8f9fa', 'Red': '#ff4b4b', 'Green': '#09ab3b', 'Yellow'
 CENTER_COLORS = {'Up': 'White', 'Left': 'Orange', 'Front': 'Green', 'Right': 'Red', 'Back': 'Blue', 'Down': 'Yellow'}
 
 ORIENTATION_GUIDE = {
-    'Up':    "Look at the **⬜ White Face**. Ensure the **🟦 Blue Center** is pointing UP.",
-    'Left':  "Look at the **🟧 Orange Face**. Ensure the **⬜ White Center** is pointing UP.",
-    'Front': "Look at the **🟩 Green Face**. Ensure the **⬜ White Center** is pointing UP.",
-    'Right': "Look at the **🟥 Red Face**. Ensure the **⬜ White Center** is pointing UP.",
-    'Back':  "Look at the **🟦 Blue Face**. Ensure the **⬜ White Center** is pointing UP.",
-    'Down':  "Look at the **🟨 Yellow Face**. Ensure the **🟩 Green Center** is pointing UP."
+    'Up':    "Point the **⬜ White** side straight at the camera. Ensure the **🟦 Blue** side is facing the ceiling ⬆️.",
+    'Left':  "Point the **🟧 Orange** side straight at the camera. Ensure the **⬜ White** side is facing the ceiling ⬆️.",
+    'Front': "Point the **🟩 Green** side straight at the camera. Ensure the **⬜ White** side is facing the ceiling ⬆️.",
+    'Right': "Point the **🟥 Red** side straight at the camera. Ensure the **⬜ White** side is facing the ceiling ⬆️.",
+    'Back':  "Point the **🟦 Blue** side straight at the camera. Ensure the **⬜ White** side is facing the ceiling ⬆️.",
+    'Down':  "Point the **🟨 Yellow** side straight at the camera. Ensure the **🟩 Green** side is facing the ceiling ⬆️."
 }
 
 # Initialize states
@@ -96,6 +96,24 @@ def get_calibrated_colors():
             
     return std_colors
 
+
+def trigger_frontend_clear():
+    components.html("""
+        <script>
+            setTimeout(() => {
+                const btns = window.parent.document.querySelectorAll('button');
+                btns.forEach(b => {
+                    const t = b.innerText.toLowerCase();
+                    const a = b.getAttribute('aria-label') || "";
+                    const title = b.title || "";
+                    if (t.includes('clear photo') || a.includes('Remove') || title.includes('Remove')) {
+                        b.click();
+                    }
+                });
+            }, 100);
+        </script>
+    """, height=0)
+
 # --- 2. Computer Vision Logic ---
 def extract_colors_from_image(image_bytes, expected_center):
     file_bytes = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
@@ -167,17 +185,19 @@ def extract_colors_from_image(image_bytes, expected_center):
 
 # --- 3. Live Mini-Map ---
 def render_live_map():
-    html = '<div style="display: grid; grid-template-columns: repeat(4, 50px); gap: 5px; justify-content: center;">'
+    html = '<div style="display: grid; grid-template-columns: repeat(4, 55px); gap: 6px; justify-content: center; text-align: center; font-family: sans-serif;">'
     grid_positions = {'Up': (1, 2), 'Left': (2, 1), 'Front': (2, 2), 'Right': (2, 3), 'Back': (2, 4), 'Down': (3, 2)}
     for row in range(1, 4):
         for col in range(1, 5):
             found_face = next((f for f, p in grid_positions.items() if p == (row, col)), None)
             if found_face:
-                html += '<div style="display: grid; grid-template-columns: repeat(3, 15px); gap: 1px;">'
+                # Add text label for the face name
+                html += f'<div><div style="font-size: 11px; font-weight: bold; color: #888; margin-bottom: 3px;">{found_face}</div>'
+                html += '<div style="display: grid; grid-template-columns: repeat(3, 16px); gap: 2px; justify-content: center;">'
                 for color in st.session_state.cube_state[found_face]:
                     hex_c = HEX_COLORS[color]
-                    html += f'<div style="width: 15px; height: 15px; background-color: {hex_c}; border: 1px solid #444; border-radius: 2px;"></div>'
-                html += '</div>'
+                    html += f'<div style="width: 16px; height: 16px; background-color: {hex_c}; border: 1px solid rgba(255,255,255,0.2); border-radius: 2px; box-shadow: inset 0 0 2px rgba(0,0,0,0.5);"></div>'
+                html += '</div></div>'
             else: html += '<div></div>'
     html += '</div>'
     return html
@@ -203,12 +223,22 @@ with st.sidebar:
 st.title("🧊 AI Rubik's Solver")
 
 if app_mode == "📸 Scan & Solve":
+    with st.expander("🎓 Beginner's Guide: Reading the Map & Avoiding Errors", expanded=False):
+        st.markdown("""
+        **Why does the AI sometimes say 'Impossible Cube State'?**
+        A Rubik's cube algorithm is intensely strict. The most common error is holding the cube rotated sideways when taking a photo. 
+        
+        **The Golden Rule:** Always strictly obey the 🧭 **HOW TO HOLD** instructions! If it says "Blue side is facing the ceiling", you must physically hold the cube so the Blue side aims UP towards the room's ceiling before snapping the photo.
+        
+        **How to read the Live Map:** The **🗺️ Live Cube Map** on the left simulates an unfolded cardboard box of your Rubik's cube. Check it after scanning. If any single dot doesn't match your physical cube (while holding it in the exact instructed orientation), simply click the dot in the `✏️ Manual Editing` section to fix it before pressing Solve!
+        """)
+        
     if st.session_state.custom_std_colors:
         calibrated_list = ", ".join(st.session_state.custom_std_colors.keys())
         st.success(f"🧠 **AI is using your custom lighting profiles for:** {calibrated_list}")
 
     # Use a single global camera to prevent browser freezing with multiple video streams
-    current_face = st.radio("🧭 **Select which face you are scanning:**", FACES, format_func=lambda x: f"{COLOR_EMOJIS[CENTER_COLORS[x]]} {x} Face", horizontal=True)
+    current_face = st.radio("🧭 **Select which face you are scanning:**", FACES, format_func=lambda x: f"{COLOR_EMOJIS[CENTER_COLORS[x]]} {x} Face", horizontal=True, key="face_selector")
 
     if st.session_state.get('last_scanned_face') != current_face:
         st.session_state.last_scanned_face = current_face
@@ -232,18 +262,7 @@ if app_mode == "📸 Scan & Solve":
             
         # Inject JS to click the Clear Photo button if a swap happened
         if st.session_state.get('trigger_js_clear'):
-            components.html("""
-                <script>
-                    setTimeout(() => {
-                        const btns = window.parent.document.querySelectorAll('button');
-                        btns.forEach(b => {
-                            if (b.innerText.toLowerCase().includes('clear photo')) {
-                                b.click();
-                            }
-                        });
-                    }, 100);  // Slight delay allows DOM to mount safely
-                </script>
-            """, height=0)
+            trigger_frontend_clear()
             st.session_state.trigger_js_clear = False
 
         
@@ -279,6 +298,17 @@ if app_mode == "📸 Scan & Solve":
                         current_face_colors[i] = AVAILABLE_COLORS[next_index]
                         st.session_state.cube_state[current_face] = current_face_colors
                         st.rerun()
+                        
+        st.divider()
+        # Veterans Auto-Advance Button
+        next_idx = (FACES.index(current_face) + 1) % 6
+        if next_idx == 0:
+             st.success("🎉 You have looped through all 6 faces! Try validating!")
+        else:
+             next_f = FACES[next_idx]
+             if st.button(f"🚀 Looks Good! Proceed to **{next_f} Face** ➡️", use_container_width=True):
+                 st.session_state.face_selector = next_f
+                 st.rerun()
 
     st.divider()
 
@@ -287,7 +317,17 @@ if app_mode == "📸 Scan & Solve":
         if is_valid:
             with st.spinner("Executing Algorithm..."):
                 solution = solve_cube(st.session_state.cube_state)
-                if "Error" in solution: st.error(solution)
+                if solution == "!IMPOSSIBLE_STATE!":
+                   st.error("❌ **Algorithm Error: Impossible Cube State Detected!**")
+                   st.markdown("""
+                   The AI counted exactly 9 squares of each color, but the way they are logically arranged on the 3D cube is **Physically Impossible**, similar to taking apart a Rubik's cube and gluing the pieces back in the wrong places!
+                   
+                   **How to fix this in 3 seconds:**
+                   1. Look at the 🗺️ **Live Cube Map** on the left sidebar.
+                   2. See any single dot or corner that looks wrong compared to your real cube? (This usually happens because you held a face incorrectly while snapping the photo, so the colors rotated).
+                   3. Use the `✏️ Manual Editing` buttons here to simply **click the bad colors to swap them** to correct them!
+                   """)
+                elif "Error" in solution: st.error(solution)
                 else:
                     st.balloons()
                     st.success("🎉 Solution Found!")
@@ -301,6 +341,10 @@ elif app_mode == "⚙️ Tune Colors":
     
     calib_color = st.radio("Select the color you want to calibrate:", AVAILABLE_COLORS, format_func=lambda x: f"{COLOR_EMOJIS[x]} {x}", horizontal=True)
     
+    if st.session_state.get('last_calib_color') != calib_color:
+        st.session_state.last_calib_color = calib_color
+        st.session_state.trigger_calib_js_clear = True
+        
     st.info(f"**Instructions:** Place a **{calib_color}** block directly in the absolute **DEAD CENTER** of the frame.")
     
     calib_method = st.radio("Calibration Method:", ["📹 Live Camera", "📂 Upload Photo"], horizontal=True, label_visibility="collapsed", key="calib_method")
@@ -309,6 +353,10 @@ elif app_mode == "⚙️ Tune Colors":
         calib_img_buffer = st.camera_input("Take a photo of the target color", key="calib_camera")
     else:
         calib_img_buffer = st.file_uploader("Upload photo of the target color", type=['png', 'jpg', 'jpeg'], key="calib_upload")
+        
+    if st.session_state.get('trigger_calib_js_clear'):
+        trigger_frontend_clear()
+        st.session_state.trigger_calib_js_clear = False
     
     if calib_img_buffer is not None:
         file_bytes = np.asarray(bytearray(calib_img_buffer.read()), dtype=np.uint8)
