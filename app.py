@@ -214,11 +214,16 @@ if app_mode == "📸 Scan & Solve":
     col_camera, col_manual = st.columns([1, 1])
 
     with col_camera:
-        st.write(f"### 📷 Camera Scanner")
+        st.write(f"### 📷 Image Input")
         st.write("Align the cube inside the dark central box.")
         
+        input_method = st.radio("Input Method:", ["📹 Live Camera", "📂 Upload Photo"], horizontal=True, label_visibility="collapsed", key="scan_method")
+        
         # Binding the key to current_face automatically clears the photo when switching faces
-        img_buffer = st.camera_input("Take a picture", key=f"cam_{current_face}")
+        if input_method == "📹 Live Camera":
+            img_buffer = st.camera_input("Take a picture", key=f"cam_{current_face}")
+        else:
+            img_buffer = st.file_uploader("Upload face image", type=['png', 'jpg', 'jpeg'], key=f"up_{current_face}")
         
         # We also need to track WHICH face this photo was applied to
         if img_buffer is not None:
@@ -274,9 +279,14 @@ elif app_mode == "⚙️ Tune Colors":
     
     calib_color = st.radio("Select the color you want to calibrate:", AVAILABLE_COLORS, format_func=lambda x: f"{COLOR_EMOJIS[x]} {x}", horizontal=True)
     
-    st.info(f"**Instructions:** Hold a **{calib_color}** block directly in the absolute **DEAD CENTER** of the aiming box and take a picture.")
+    st.info(f"**Instructions:** Place a **{calib_color}** block directly in the absolute **DEAD CENTER** of the frame.")
     
-    calib_img_buffer = st.camera_input("Take a photo of the target color", key="calib_camera")
+    calib_method = st.radio("Calibration Method:", ["📹 Live Camera", "📂 Upload Photo"], horizontal=True, label_visibility="collapsed", key="calib_method")
+    
+    if calib_method == "📹 Live Camera":
+        calib_img_buffer = st.camera_input("Take a photo of the target color", key="calib_camera")
+    else:
+        calib_img_buffer = st.file_uploader("Upload photo of the target color", type=['png', 'jpg', 'jpeg'], key="calib_upload")
     
     if calib_img_buffer is not None:
         file_bytes = np.asarray(bytearray(calib_img_buffer.read()), dtype=np.uint8)
