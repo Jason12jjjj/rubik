@@ -293,12 +293,23 @@ def extract_colors_from_image(image_bytes, expected_center):
 # 3D TwistyPlayer
 # ─────────────────────────────────────────────────────────────────────────────
 def render_3d_solution(solution_str, speed):
+    def invert_solution(sol):
+        inv = []
+        for m in reversed(sol.split()):
+            if "'" in m: inv.append(m.replace("'", ""))
+            elif "2" in m: inv.append(m)
+            else: inv.append(m + "'")
+        return " ".join(inv)
+
+    setup_alg = invert_solution(solution_str)
+
     html = f"""
     <script src="https://cdn.cubing.net/v0/js/cubing/twisty" type="module"></script>
     <style>
       twisty-player {{ width: 100%; height: 360px; }}
     </style>
     <twisty-player
+      experimental-setup-alg="{setup_alg}"
       alg="{solution_str}"
       visualization="PG3D"
       control-panel="bottom-row"
@@ -319,32 +330,41 @@ def render_3d_solution(solution_str, speed):
 DEFAULT_FACE_COLORS = {face: (['White'] * 4 + [CENTER_COLORS[face]] + ['White'] * 4) for face in FACES}
 
 def render_live_map(active_face=None):
-    grid_positions = {'Up':(1,2),'Left':(2,1),'Front':(2,2),'Right':(2,3),'Back':(2,4),'Down':(3,2)}
-    html = '<div style="display:grid;grid-template-columns:repeat(4,62px);gap:4px;justify-content:center;text-align:center;font-family:sans-serif;">'
-    for row in range(1, 4):
-        for col in range(1, 5):
-            found = next((f for f, p in grid_positions.items() if p == (row, col)), None)
-            if found:
-                colors      = st.session_state.cube_state[found]
-                is_active   = (found == active_face)
-                is_scanned  = (found in st.session_state.processed_photos)
-                center_emoji = COLOR_EMOJIS[CENTER_COLORS[found]]
+    # Grouping faces by their physical opposites makes it easier to mentally map
+    pairs = [('Up', 'Down'), ('Front', 'Back'), ('Left', 'Right')]
+    html = '<div style="display:flex; flex-direction:column; gap:16px; font-family:sans-serif; margin-top:8px;">'
+    for f1, f2 in pairs:
+        html += '<div style="display:flex; justify-content:space-evenly; width:100%;">'
+        for face in (f1, f2):
+            colors      = st.session_state.cube_state[face]
+            is_active   = (face == active_face)
+            is_scanned  = (face in st.session_state.processed_photos)
 
-                border_style = ("3px solid #00e5ff; box-shadow: 0 0 8px #00e5ff;"
-                                if is_active else "1px solid rgba(255,255,255,0.15);")
-                opacity = "1.0" if (is_scanned or is_active) else "0.4"
-
-                html += (f'<div style="opacity:{opacity};">'
-                         f'<div style="font-size:10px;font-weight:bold;color:{"#00e5ff" if is_active else "#888"};'
-                         f'margin-bottom:2px;">{center_emoji} {found}</div>'
-                         f'<div style="display:grid;grid-template-columns:repeat(3,18px);gap:2px;justify-content:center;'
-                         f'border:{border_style};border-radius:3px;padding:2px;">')
-                for color in colors:
-                    html += (f'<div style="width:18px;height:18px;background-color:{HEX_COLORS[color]};'
-                             f'border:1px solid rgba(0,0,0,0.3);border-radius:2px;"></div>')
-                html += '</div></div>'
+            if is_scanned and is_active:
+                status = "🎯 ✅"
+            elif is_scanned:
+                status = "✅"
+            elif is_active:
+                status = "🎯"
             else:
-                html += '<div></div>'
+                status = "⏳"
+
+            border_style = ("3px solid #00e5ff; box-shadow: 0 0 12px rgba(0,229,255,0.6);"
+                            if is_active else "2px solid rgba(255,255,255,0.15);")
+            opacity = "1.0" if (is_scanned or is_active) else "0.35"
+
+            html += (f'<div style="opacity:{opacity}; display:flex; flex-direction:column; align-items:center; width: 45%;">'
+                     f'<div style="font-size:13px; font-weight:600; padding-bottom:4px; color:{"#00e5ff" if is_active else "#ddd"};">'
+                     f'{status} {face}'
+                     f'</div>'
+                     f'<div style="display:grid;grid-template-columns:repeat(3,26px);gap:3px;justify-content:center;align-items:center;'
+                     f'border:{border_style};border-radius:6px;padding:4px;background:rgba(0,0,0,0.25);">'
+                     )
+            for color in colors:
+                html += (f'<div style="width:26px;height:26px;background-color:{HEX_COLORS[color]};'
+                         f'border:1px solid rgba(0,0,0,0.4);border-radius:3px;"></div>')
+            html += '</div></div>'
+        html += '</div>'
     html += '</div>'
     return html
 
