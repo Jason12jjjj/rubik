@@ -21,18 +21,21 @@ def validate_cube_state(faces_data):
     A valid cube must have exactly 9 squares of each of the 6 colors.
     """
     color_counts = {'White': 0, 'Red': 0, 'Green': 0, 'Yellow': 0, 'Orange': 0, 'Blue': 0}
-    
+
     for face, colors in faces_data.items():
+        # FIX #10: each face must have exactly 9 squares
+        if len(colors) != 9:
+            return False, f"{face} face has {len(colors)} squares — expected exactly 9."
         for color in colors:
             if color in color_counts:
                 color_counts[color] += 1
             else:
-                return False, f"Invalid color detected: {color}"
-                
+                return False, f"Invalid color detected on {face} face: '{color}'"
+
     for color, count in color_counts.items():
         if count != 9:
             return False, f"Validation Failed: Found {count} {color} squares. Must be exactly 9."
-            
+
     return True, "Cube state is valid."
 
 def solve_cube(faces_data):
