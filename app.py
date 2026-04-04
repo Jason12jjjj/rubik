@@ -40,18 +40,33 @@ if 'processed_photos' not in st.session_state:
 if 'custom_std_colors' not in st.session_state:
     st.session_state.custom_std_colors = {}
 
+if 'cube_size' not in st.session_state:
+    st.session_state.cube_size = 50
+
 # --- 🌟 CSS HACK: Overlay a Targeting Box on the Camera ---
-st.markdown("""
+c_size = st.session_state.get('cube_size', 50)
+st.markdown(f"""
 <style>
-    /* This creates a subtle aiming box over the Streamlit camera */
-    [data-testid="stCameraInput"] > div:first-child::after {
+    /* This creates a 3x3 aiming grid over the Streamlit camera */
+    [data-testid="stCameraInput"] > div:first-child::after {{
         content: "";
         position: absolute;
-        top: 20%; bottom: 20%; left: 30%; right: 30%;
-        border: 3px dashed rgba(255, 255, 255, 0.7);
+        top: 50%; left: 50%;
+        transform: translate(-50%, -50%);
+        width: {c_size}%;
+        max-width: {c_size}vh;
+        aspect-ratio: 1 / 1;
+        border: 3px solid rgba(0, 255, 0, 0.8);
         pointer-events: none; /* Let clicks pass through */
-        box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.3); /* Darken surroundings */
-    }
+        box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5); /* Darken surroundings */
+        
+        /* Draw the internal 3x3 Grid lines */
+        background-image: 
+            linear-gradient(to right, transparent 33.33%, rgba(0, 255, 0, 0.6) 33.33%, rgba(0, 255, 0, 0.6) calc(33.33% + 2px), transparent calc(33.33% + 2px)),
+            linear-gradient(to right, transparent 66.66%, rgba(0, 255, 0, 0.6) 66.66%, rgba(0, 255, 0, 0.6) calc(66.66% + 2px), transparent calc(66.66% + 2px)),
+            linear-gradient(to bottom, transparent 33.33%, rgba(0, 255, 0, 0.6) 33.33%, rgba(0, 255, 0, 0.6) calc(33.33% + 2px), transparent calc(33.33% + 2px)),
+            linear-gradient(to bottom, transparent 66.66%, rgba(0, 255, 0, 0.6) 66.66%, rgba(0, 255, 0, 0.6) calc(66.66% + 2px), transparent calc(66.66% + 2px));
+    }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -77,8 +92,9 @@ def extract_colors_from_image(image_bytes, expected_center):
     file_bytes = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, 1) 
     
+    grid_scale = st.session_state.get('cube_size', 50)
     height, width, _ = img.shape
-    grid_size = min(height, width) // 2 
+    grid_size = int(min(height, width) * (grid_scale / 100.0))
     cell_size = grid_size // 3
     
     start_x = (width - grid_size) // 2
@@ -162,6 +178,10 @@ with st.sidebar:
     app_mode = st.radio("Choose Mode:", ["📸 Scan & Solve", "⚙️ Tune Colors"])
     st.divider()
     
+    st.markdown("## 📐 Camera Tool")
+    st.slider("📏 Viewport Grid Size", min_value=30, max_value=80, key="cube_size", help="Resize the green scanning box to perfectly fit your Rubik's Cube.")
+    
+    st.divider()
     st.markdown("## 🗺️ Live Cube Map")
     st.markdown(render_live_map(), unsafe_allow_html=True) 
     
@@ -265,11 +285,21 @@ elif app_mode == "⚙️ Tune Colors":
         hsv = cv2.cvtColor(pixel_bgr, cv2.COLOR_BGR2HSV)[0][0]
         h, s, v = int(hsv[0]), int(hsv[1]), int(hsv[2])
         
+        # Draw a visual targeting box so the user knows what was sampled
+        debug_img = img.copy()
+        cv2.rectangle(debug_img, (cx-20, cy-20), (cx+20, cy+20), (255, 255, 255), 3)
+        cv2.circle(debug_img, (cx, cy), 5, (0, 255, 0), -1)
+        debug_img_rgb = cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB)
+        
         # Render what the camera saw in the exact center
         st.write("#### Captured Sample:")
-        sample_hex = '#{:02x}{:02x}{:02x}'.format(avg_r, avg_g, avg_b)
-        st.markdown(f'<div style="width: 100px; height: 100px; background-color: {sample_hex}; border: 2px solid white; border-radius: 10px;"></div>', unsafe_allow_html=True)
-        st.caption(f"Raw HSV: [{h}, {s}, {v}]")
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            st.image(debug_img_rgb, caption="Targeted Region (Center)")
+        with col2:
+            sample_hex = '#{:02x}{:02x}{:02x}'.format(avg_r, avg_g, avg_b)
+            st.markdown(f'<div style="width: 100px; height: 100px; background-color: {sample_hex}; border: 2px solid white; border-radius: 10px;"></div>', unsafe_allow_html=True)
+            st.caption(f"Raw HSV: [{h}, {s}, {v}]")
         
         if st.button(f"✅ Save as new standard for {calib_color}", type="primary"):
             st.session_state.custom_std_colors[calib_color] = (h, s, v)
