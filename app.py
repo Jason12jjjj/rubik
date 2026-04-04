@@ -217,7 +217,8 @@ if app_mode == "📸 Scan & Solve":
         st.write(f"### 📷 Camera Scanner")
         st.write("Align the cube inside the dark central box.")
         
-        img_buffer = st.camera_input("Take a picture", key="global_camera")
+        # Binding the key to current_face automatically clears the photo when switching faces
+        img_buffer = st.camera_input("Take a picture", key=f"cam_{current_face}")
         
         # We also need to track WHICH face this photo was applied to
         if img_buffer is not None:
