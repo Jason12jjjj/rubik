@@ -52,13 +52,22 @@ if 'auto_detect' not in st.session_state:
 
 # --- CSS: Overlay 3x3 grid on camera — only rendered in manual mode ---
 c_size = st.session_state.get('cube_size', 50)
+
+# Base: grid overlay is always HIDDEN by default
+st.markdown("""
+<style>
+    [data-testid="stCameraInput"] { position: relative; }
+    [data-testid="stCameraInput"]::after { display: none !important; }
+</style>
+""", unsafe_allow_html=True)
+
+# Only show the green grid when auto-detect is explicitly turned OFF
 if not st.session_state.get('auto_detect', True):
     st.markdown(f"""
 <style>
-    [data-testid="stCameraInput"] {{ position: relative; }}
     [data-testid="stCameraInput"]::after {{
         content: "";
-        display: block;
+        display: block !important;
         position: absolute;
         top: 50%; left: 50%;
         transform: translate(-50%, -50%);
