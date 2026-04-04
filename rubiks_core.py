@@ -57,9 +57,8 @@ def solve_cube(faces_data):
         # Execute Kociemba Algorithm
         solution = kociemba.solve(cube_string)
         return solution
-        
-    except ValueError as e:
-        # Exception Handling for unsolvable states (e.g., corner twist)
-        return f"Algorithm Error: Impossible cube state detected. ({str(e)})"
+
+    except ValueError:
+        return "!IMPOSSIBLE_STATE!"
     except Exception as e:
         return f"System Error: {str(e)}"
