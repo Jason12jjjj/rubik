@@ -71,19 +71,7 @@ def extract_colors_from_image(image_bytes, expected_center):
         cv2.line(debug_img, (start_x + i * cell_size, start_y), (start_x + i * cell_size, start_y + grid_size), (255, 255, 255), 2)
         cv2.line(debug_img, (start_x, start_y + i * cell_size), (start_x + grid_size, start_y + i * cell_size), (255, 255, 255), 2)
 
-    standard_colors_bgr = {
-        'White': [220, 220, 220],
-        'Yellow': [0, 210, 230],
-        'Orange': [0, 100, 240],
-        'Red': [20, 20, 200],
-        'Green': [50, 180, 50],
-        'Blue': [180, 50, 50]
-    }
-    
-    standard_colors_lab = {}
-    for name, bgr in standard_colors_bgr.items():
-        lab_val = cv2.cvtColor(np.uint8([[bgr]]), cv2.COLOR_BGR2LAB)[0][0]
-        standard_colors_lab[name] = lab_val
+    # HSV robust classification replaces LAB distance 
 
     for row in range(3):
         for col in range(3):
@@ -93,24 +81,27 @@ def extract_colors_from_image(image_bytes, expected_center):
             roi_bgr = img[cy-5:cy+5, cx-5:cx+5]
             avg_b, avg_g, avg_r = np.median(roi_bgr, axis=(0, 1)).astype(np.uint8)
             
+            # Convert to HSV for much better illumination invariance
             pixel_bgr = np.uint8([[[avg_b, avg_g, avg_r]]])
-            pixel_lab = cv2.cvtColor(pixel_bgr, cv2.COLOR_BGR2LAB)[0][0]
-            L_img, a_img, b_img = pixel_lab
+            hsv = cv2.cvtColor(pixel_bgr, cv2.COLOR_BGR2HSV)[0][0]
+            h, s, v = hsv
             
-            min_dist = float('inf')
-            best_color = 'White'
-            
-            for color_name, std_lab in standard_colors_lab.items():
-                L_std, a_std, b_std = std_lab
+            # Robust Hue-based Color Classification
+            if s < 60 or (v > 200 and s < 80):
+                best_color = 'White'
+            elif h < 9 or h > 165:
+                best_color = 'Red'
+            elif h < 24:
+                best_color = 'Orange'
+            elif h < 45:
+                best_color = 'Yellow'
+            elif h < 85:
+                best_color = 'Green'
+            elif h < 140:
+                best_color = 'Blue'
+            else:
+                best_color = 'Red' # Fallback for purples into Red
                 
-                dist = np.sqrt(0.3 * (int(L_img) - int(L_std))**2 + 
-                                     (int(a_img) - int(a_std))**2 + 
-                                     (int(b_img) - int(b_std))**2)
-                
-                if dist < min_dist:
-                    min_dist = dist
-                    best_color = color_name
-                    
             detected_colors.append(best_color)
             
             cv2.circle(debug_img, (cx, cy), 8, (0, 255, 0), -1)
