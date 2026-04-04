@@ -36,11 +36,9 @@ if 'cube_state' not in st.session_state:
 if 'processed_photos' not in st.session_state:
     st.session_state.processed_photos = {}
 
-# Memory for Auto-Calibration
-if 'raw_hsv' not in st.session_state:
-    st.session_state.raw_hsv = {}
-if 'is_calibrated' not in st.session_state:
-    st.session_state.is_calibrated = False
+# Memory for Custom Calibration
+if 'custom_std_colors' not in st.session_state:
+    st.session_state.custom_std_colors = {}
 
 # --- 🌟 CSS HACK: Overlay a Targeting Box on the Camera ---
 st.markdown("""
@@ -68,33 +66,11 @@ def get_calibrated_colors():
         'Blue':   (110, 150, 150)
     }
     
-    # Train from user manual checks across all scanned faces
-    collected = {c: [] for c in AVAILABLE_COLORS}
-    for face in FACES:
-        if face in st.session_state.raw_hsv and face in st.session_state.cube_state:
-            hsv_list = st.session_state.raw_hsv[face]
-            labels = st.session_state.cube_state[face]
-            if len(hsv_list) == 9 and len(labels) == 9:
-                for i in range(9):
-                    collected[labels[i]].append(hsv_list[i])
-                    
-    learned_something = False
-    for c, hsvs in collected.items():
-        if len(hsvs) > 0:
-            if c == 'Red':
-                # Handle circular wrap for Red Hue (0/180)
-                h_vals = [x[0] if x[0] < 90 else x[0] - 180 for x in hsvs]
-                avg_h = int(np.median(h_vals))
-                if avg_h < 0: avg_h += 180
-            else:
-                avg_h = int(np.median([x[0] for x in hsvs]))
-                
-            avg_s = int(np.median([x[1] for x in hsvs]))
-            avg_v = int(np.median([x[2] for x in hsvs]))
-            std_colors[c] = (avg_h, avg_s, avg_v)
-            learned_something = True
+    # Override with explicitly user-calibrated colors if available
+    for c_name, custom_hsv in st.session_state.custom_std_colors.items():
+        std_colors[c_name] = custom_hsv
             
-    return std_colors, learned_something
+    return std_colors
 
 # --- 2. Computer Vision Logic ---
 def extract_colors_from_image(image_bytes, expected_center):
@@ -110,10 +86,8 @@ def extract_colors_from_image(image_bytes, expected_center):
     
     debug_img = img.copy()
     detected_colors = []
-    raw_hsv_list = []
     
-    std_colors, is_calibrated = get_calibrated_colors()
-    st.session_state.is_calibrated = is_calibrated
+    std_colors = get_calibrated_colors()
     
     cv2.rectangle(debug_img, (start_x, start_y), (start_x + grid_size, start_y + grid_size), (255, 255, 255), 3)
     for i in range(1, 3):
@@ -136,7 +110,6 @@ def extract_colors_from_image(image_bytes, expected_center):
             pixel_bgr = np.uint8([[[avg_b, avg_g, avg_r]]])
             hsv = cv2.cvtColor(pixel_bgr, cv2.COLOR_BGR2HSV)[0][0]
             h, s, v = int(hsv[0]), int(hsv[1]), int(hsv[2])
-            raw_hsv_list.append((h, s, v))
             
             min_dist = float('inf')
             best_color = 'White'
@@ -165,7 +138,7 @@ def extract_colors_from_image(image_bytes, expected_center):
     detected_colors[4] = expected_center
     debug_img_rgb = cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB)
     
-    return detected_colors, debug_img_rgb, raw_hsv_list
+    return detected_colors, debug_img_rgb
 
 # --- 3. Live Mini-Map ---
 def render_live_map():
@@ -185,79 +158,120 @@ def render_live_map():
     return html
 
 with st.sidebar:
+    st.markdown("## 🧭 Navigation")
+    app_mode = st.radio("Choose Mode:", ["📸 Scan & Solve", "⚙️ Tune Colors"])
+    st.divider()
+    
     st.markdown("## 🗺️ Live Cube Map")
     st.markdown(render_live_map(), unsafe_allow_html=True) 
-    st.info("💡 **Demo Strategy:** If the AI misidentifies a color due to room lighting, just click the buttons on the right to manually fix it! The AI will instantly learn from your fix.")
     
     st.divider()
     if st.button("🔄 Reset Lighting Calibration", use_container_width=True):
-        st.session_state.raw_hsv = {}
-        st.session_state.is_calibrated = False
+        st.session_state.custom_std_colors = {}
         st.rerun()
     
 # --- 4. Main User Interface ---
 st.title("🧊 AI Rubik's Solver")
-if st.session_state.get('is_calibrated', False):
-    st.success("🧠 **AI has learned your room's lighting based on your manual corrections!**")
 
-tabs = st.tabs([f"{COLOR_EMOJIS[CENTER_COLORS[f]]} {f} Face" for f in FACES])
+if app_mode == "📸 Scan & Solve":
+    if st.session_state.custom_std_colors:
+        calibrated_list = ", ".join(st.session_state.custom_std_colors.keys())
+        st.success(f"🧠 **AI is using your custom lighting profiles for:** {calibrated_list}")
 
-for idx, tab in enumerate(tabs):
-    current_face = FACES[idx]
-    
-    with tab:
-        st.info(f"🧭 **HOW TO HOLD:** {ORIENTATION_GUIDE[current_face]}")
-        col_camera, col_manual = st.columns([1, 1])
+    # Use a single global camera to prevent browser freezing with multiple video streams
+    current_face = st.radio("🧭 **Select which face you are scanning:**", FACES, format_func=lambda x: f"{COLOR_EMOJIS[CENTER_COLORS[x]]} {x} Face", horizontal=True)
+
+    st.info(f"🧭 **HOW TO HOLD:** {ORIENTATION_GUIDE[current_face]}")
+
+    col_camera, col_manual = st.columns([1, 1])
+
+    with col_camera:
+        st.write(f"### 📷 Camera Scanner")
+        st.write("Align the cube inside the dark central box.")
         
-        with col_camera:
-            st.write(f"### 📷 Camera Scanner")
-            st.write("Align the cube inside the dark central box.")
+        img_buffer = st.camera_input("Take a picture", key="global_camera")
+        
+        # We also need to track WHICH face this photo was applied to
+        if img_buffer is not None:
+            photo_id = img_buffer.file_id
+            cache_key = f"{current_face}_{photo_id}"
             
-            img_buffer = st.camera_input("Take a picture", key=f"cam_{current_face}")
-            
-            # Prevent state-overwrite bug by tracking photo IDs
-            if img_buffer is not None:
-                photo_id = img_buffer.file_id
-                if st.session_state.processed_photos.get(current_face) != photo_id:
-                    detected, debug_img, raw_hsv = extract_colors_from_image(img_buffer, CENTER_COLORS[current_face])
-                    st.session_state.cube_state[current_face] = detected
-                    st.session_state.raw_hsv[current_face] = raw_hsv
-                    st.session_state[f"debug_{current_face}"] = debug_img
-                    st.session_state.processed_photos[current_face] = photo_id
-                    st.rerun() # Refresh map
-                
-                if f"debug_{current_face}" in st.session_state:
-                    st.image(st.session_state[f"debug_{current_face}"], caption="AI Thought Process. Fix errors on the right ➡️")
-                
-        with col_manual:
-            st.write(f"### 🖱️ Edit / Verify Colors")
-            st.write("Read Left-to-Right, Top-to-Bottom.")
-            grid_cols = st.columns(3)
-            current_face_colors = st.session_state.cube_state[current_face]
-            for i in range(9):
-                col_idx = i % 3
-                with grid_cols[col_idx]:
-                    if i == 4:
-                        st.button(f"{COLOR_EMOJIS[CENTER_COLORS[current_face]]} Ctr", key=f"lock_{current_face}", disabled=True, use_container_width=True)
-                    else:
-                        current_color = current_face_colors[i]
-                        if st.button(f"{COLOR_EMOJIS[current_color]} {current_color}", key=f"btn_{current_face}_{i}", use_container_width=True):
-                            next_index = (AVAILABLE_COLORS.index(current_color) + 1) % len(AVAILABLE_COLORS)
-                            current_face_colors[i] = AVAILABLE_COLORS[next_index]
-                            st.session_state.cube_state[current_face] = current_face_colors
-                            st.rerun()
+            if st.session_state.processed_photos.get('last_processed') != cache_key:
+                detected, debug_img = extract_colors_from_image(img_buffer, CENTER_COLORS[current_face])
+                st.session_state.cube_state[current_face] = detected
+                st.session_state[f"debug_{current_face}"] = debug_img
+                st.session_state.processed_photos['last_processed'] = cache_key
+                st.rerun() # Refresh map
 
-st.divider()
+        if f"debug_{current_face}" in st.session_state:
+            st.image(st.session_state[f"debug_{current_face}"], caption="AI Thought Process. Fix errors on the right ➡️")
 
-if st.button("Validate & Solve", type="primary", use_container_width=True):
-    is_valid, validation_msg = validate_cube_state(st.session_state.cube_state)
-    if is_valid:
-        with st.spinner("Executing Algorithm..."):
-            solution = solve_cube(st.session_state.cube_state)
-            if "Error" in solution: st.error(solution)
-            else:
-                st.balloons()
-                st.success("🎉 Solution Found!")
-                st.markdown(f"### ➡️ Steps: `{solution}`")
-    else:
-        st.error(f"❌ Validation Failed: {validation_msg}")
+    with col_manual:
+        st.write(f"### 🖱️ Edit / Verify Colors")
+        st.write("Read Left-to-Right, Top-to-Bottom.")
+        grid_cols = st.columns(3)
+        current_face_colors = st.session_state.cube_state[current_face]
+        for i in range(9):
+            col_idx = i % 3
+            with grid_cols[col_idx]:
+                if i == 4:
+                    st.button(f"{COLOR_EMOJIS[CENTER_COLORS[current_face]]} Ctr", key=f"lock_{current_face}", disabled=True, use_container_width=True)
+                else:
+                    current_color = current_face_colors[i]
+                    if st.button(f"{COLOR_EMOJIS[current_color]} {current_color}", key=f"btn_{current_face}_{i}", use_container_width=True):
+                        next_index = (AVAILABLE_COLORS.index(current_color) + 1) % len(AVAILABLE_COLORS)
+                        current_face_colors[i] = AVAILABLE_COLORS[next_index]
+                        st.session_state.cube_state[current_face] = current_face_colors
+                        st.rerun()
+
+    st.divider()
+
+    if st.button("Validate & Solve", type="primary", use_container_width=True):
+        is_valid, validation_msg = validate_cube_state(st.session_state.cube_state)
+        if is_valid:
+            with st.spinner("Executing Algorithm..."):
+                solution = solve_cube(st.session_state.cube_state)
+                if "Error" in solution: st.error(solution)
+                else:
+                    st.balloons()
+                    st.success("🎉 Solution Found!")
+                    st.markdown(f"### ➡️ Steps: `{solution}`")
+        else:
+            st.error(f"❌ Validation Failed: {validation_msg}")
+
+elif app_mode == "⚙️ Tune Colors":
+    st.markdown("### ⚙️ Explicit Color Calibration")
+    st.write("Does the AI struggle with specific colors due to your room's lighting? Teach it what those colors *actually* look like right now!")
+    
+    calib_color = st.radio("Select the color you want to calibrate:", AVAILABLE_COLORS, format_func=lambda x: f"{COLOR_EMOJIS[x]} {x}", horizontal=True)
+    
+    st.info(f"**Instructions:** Hold a **{calib_color}** block directly in the absolute **DEAD CENTER** of the aiming box and take a picture.")
+    
+    calib_img_buffer = st.camera_input("Take a photo of the target color", key="calib_camera")
+    
+    if calib_img_buffer is not None:
+        file_bytes = np.asarray(bytearray(calib_img_buffer.read()), dtype=np.uint8)
+        img = cv2.imdecode(file_bytes, 1) 
+        
+        height, width, _ = img.shape
+        cy = height // 2
+        cx = width // 2
+        
+        # Sample the center 10x10 pixels
+        roi_bgr = img[cy-5:cy+5, cx-5:cx+5]
+        avg_b, avg_g, avg_r = np.median(roi_bgr, axis=(0, 1)).astype(np.uint8)
+        
+        pixel_bgr = np.uint8([[[avg_b, avg_g, avg_r]]])
+        hsv = cv2.cvtColor(pixel_bgr, cv2.COLOR_BGR2HSV)[0][0]
+        h, s, v = int(hsv[0]), int(hsv[1]), int(hsv[2])
+        
+        # Render what the camera saw in the exact center
+        st.write("#### Captured Sample:")
+        sample_hex = '#{:02x}{:02x}{:02x}'.format(avg_r, avg_g, avg_b)
+        st.markdown(f'<div style="width: 100px; height: 100px; background-color: {sample_hex}; border: 2px solid white; border-radius: 10px;"></div>', unsafe_allow_html=True)
+        st.caption(f"Raw HSV: [{h}, {s}, {v}]")
+        
+        if st.button(f"✅ Save as new standard for {calib_color}", type="primary"):
+            st.session_state.custom_std_colors[calib_color] = (h, s, v)
+            st.success(f"Success! The AI now knows what your {calib_color} looks like.")
+            st.rerun()
