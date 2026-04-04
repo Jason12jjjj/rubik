@@ -36,6 +36,12 @@ if 'cube_state' not in st.session_state:
 if 'processed_photos' not in st.session_state:
     st.session_state.processed_photos = {}
 
+# Memory for Auto-Calibration
+if 'raw_hsv' not in st.session_state:
+    st.session_state.raw_hsv = {}
+if 'is_calibrated' not in st.session_state:
+    st.session_state.is_calibrated = False
+
 # --- 🌟 CSS HACK: Overlay a Targeting Box on the Camera ---
 st.markdown("""
 <style>
@@ -51,6 +57,45 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+def get_calibrated_colors():
+    # Base profiles for typical muted webcams
+    std_colors = {
+        'White':  (0, 30, 200),
+        'Yellow': (30, 140, 200),
+        'Orange': (13, 170, 200),
+        'Red':    (0,  180, 150),
+        'Green':  (65, 140, 150),
+        'Blue':   (110, 150, 150)
+    }
+    
+    # Train from user manual checks across all scanned faces
+    collected = {c: [] for c in AVAILABLE_COLORS}
+    for face in FACES:
+        if face in st.session_state.raw_hsv and face in st.session_state.cube_state:
+            hsv_list = st.session_state.raw_hsv[face]
+            labels = st.session_state.cube_state[face]
+            if len(hsv_list) == 9 and len(labels) == 9:
+                for i in range(9):
+                    collected[labels[i]].append(hsv_list[i])
+                    
+    learned_something = False
+    for c, hsvs in collected.items():
+        if len(hsvs) > 0:
+            if c == 'Red':
+                # Handle circular wrap for Red Hue (0/180)
+                h_vals = [x[0] if x[0] < 90 else x[0] - 180 for x in hsvs]
+                avg_h = int(np.median(h_vals))
+                if avg_h < 0: avg_h += 180
+            else:
+                avg_h = int(np.median([x[0] for x in hsvs]))
+                
+            avg_s = int(np.median([x[1] for x in hsvs]))
+            avg_v = int(np.median([x[2] for x in hsvs]))
+            std_colors[c] = (avg_h, avg_s, avg_v)
+            learned_something = True
+            
+    return std_colors, learned_something
+
 # --- 2. Computer Vision Logic ---
 def extract_colors_from_image(image_bytes, expected_center):
     file_bytes = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
@@ -65,6 +110,10 @@ def extract_colors_from_image(image_bytes, expected_center):
     
     debug_img = img.copy()
     detected_colors = []
+    raw_hsv_list = []
+    
+    std_colors, is_calibrated = get_calibrated_colors()
+    st.session_state.is_calibrated = is_calibrated
     
     cv2.rectangle(debug_img, (start_x, start_y), (start_x + grid_size, start_y + grid_size), (255, 255, 255), 3)
     for i in range(1, 3):
@@ -87,16 +136,7 @@ def extract_colors_from_image(image_bytes, expected_center):
             pixel_bgr = np.uint8([[[avg_b, avg_g, avg_r]]])
             hsv = cv2.cvtColor(pixel_bgr, cv2.COLOR_BGR2HSV)[0][0]
             h, s, v = int(hsv[0]), int(hsv[1]), int(hsv[2])
-            
-            # These are actual typical webcam HSV centers, NOT ideal RGB #FFFFFF (which fails)
-            std_colors = {
-                'White':  (0, 30, 200),
-                'Yellow': (30, 140, 200), # Yellow inherently loses saturation easily on cameras
-                'Orange': (13, 170, 200),
-                'Red':    (0,  180, 150),
-                'Green':  (65, 140, 150),
-                'Blue':   (110, 150, 150)
-            }
+            raw_hsv_list.append((h, s, v))
             
             min_dist = float('inf')
             best_color = 'White'
@@ -125,7 +165,7 @@ def extract_colors_from_image(image_bytes, expected_center):
     detected_colors[4] = expected_center
     debug_img_rgb = cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB)
     
-    return detected_colors, debug_img_rgb
+    return detected_colors, debug_img_rgb, raw_hsv_list
 
 # --- 3. Live Mini-Map ---
 def render_live_map():
@@ -147,10 +187,18 @@ def render_live_map():
 with st.sidebar:
     st.markdown("## 🗺️ Live Cube Map")
     st.markdown(render_live_map(), unsafe_allow_html=True) 
-    st.info("💡 **Demo Strategy:** If the AI misidentifies a color due to room lighting, just click the buttons on the right to manually fix it!")
+    st.info("💡 **Demo Strategy:** If the AI misidentifies a color due to room lighting, just click the buttons on the right to manually fix it! The AI will instantly learn from your fix.")
+    
+    st.divider()
+    if st.button("🔄 Reset Lighting Calibration", use_container_width=True):
+        st.session_state.raw_hsv = {}
+        st.session_state.is_calibrated = False
+        st.rerun()
     
 # --- 4. Main User Interface ---
 st.title("🧊 AI Rubik's Solver")
+if st.session_state.get('is_calibrated', False):
+    st.success("🧠 **AI has learned your room's lighting based on your manual corrections!**")
 
 tabs = st.tabs([f"{COLOR_EMOJIS[CENTER_COLORS[f]]} {f} Face" for f in FACES])
 
@@ -171,8 +219,9 @@ for idx, tab in enumerate(tabs):
             if img_buffer is not None:
                 photo_id = img_buffer.file_id
                 if st.session_state.processed_photos.get(current_face) != photo_id:
-                    detected, debug_img = extract_colors_from_image(img_buffer, CENTER_COLORS[current_face])
+                    detected, debug_img, raw_hsv = extract_colors_from_image(img_buffer, CENTER_COLORS[current_face])
                     st.session_state.cube_state[current_face] = detected
+                    st.session_state.raw_hsv[current_face] = raw_hsv
                     st.session_state[f"debug_{current_face}"] = debug_img
                     st.session_state.processed_photos[current_face] = photo_id
                     st.rerun() # Refresh map
