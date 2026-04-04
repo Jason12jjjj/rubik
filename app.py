@@ -4,6 +4,7 @@
 import numpy as np
 import cv2
 import streamlit as st
+import streamlit.components.v1 as components
 from rubiks_core import validate_cube_state, solve_cube
 
 # --- 1. System Configuration & State Management ---
@@ -211,7 +212,7 @@ if app_mode == "📸 Scan & Solve":
 
     if st.session_state.get('last_scanned_face') != current_face:
         st.session_state.last_scanned_face = current_face
-        st.session_state.scanner_id = st.session_state.get('scanner_id', 0) + 1
+        st.session_state.trigger_js_clear = True
 
     st.info(f"🧭 **HOW TO HOLD:** {ORIENTATION_GUIDE[current_face]}")
 
@@ -223,12 +224,28 @@ if app_mode == "📸 Scan & Solve":
         
         input_method = st.radio("Input Method:", ["📹 Live Camera", "📂 Upload Photo"], horizontal=True, label_visibility="collapsed", key="scan_method")
         
-        # Use a dynamic key dependent on scanner_id so it hard-resets when switching faces
-        scan_id = st.session_state.get('scanner_id', 0)
+        # Use static keys so webcam hardware feed isn't interrupted
         if input_method == "📹 Live Camera":
-            img_buffer = st.camera_input("Take a picture", key=f"cam_{current_face}_{scan_id}")
+            img_buffer = st.camera_input("Take a picture", key="global_camera")
         else:
-            img_buffer = st.file_uploader("Upload face image", type=['png', 'jpg', 'jpeg'], key=f"up_{current_face}_{scan_id}")
+            img_buffer = st.file_uploader("Upload face image", type=['png', 'jpg', 'jpeg'], key="global_upload")
+            
+        # Inject JS to click the Clear Photo button if a swap happened
+        if st.session_state.get('trigger_js_clear'):
+            components.html("""
+                <script>
+                    setTimeout(() => {
+                        const btns = window.parent.document.querySelectorAll('button');
+                        btns.forEach(b => {
+                            if (b.innerText.toLowerCase().includes('clear photo')) {
+                                b.click();
+                            }
+                        });
+                    }, 100);  // Slight delay allows DOM to mount safely
+                </script>
+            """, height=0)
+            st.session_state.trigger_js_clear = False
+
         
         # We also need to track WHICH face this photo was applied to
         if img_buffer is not None:
