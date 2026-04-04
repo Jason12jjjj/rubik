@@ -81,33 +81,40 @@ def extract_colors_from_image(image_bytes, expected_center):
             roi_bgr = img[cy-5:cy+5, cx-5:cx+5]
             avg_b, avg_g, avg_r = np.median(roi_bgr, axis=(0, 1)).astype(np.uint8)
             
-            # Adaptive Saturation Threshold to combat WebCam Lighting Quirks!
+            # Ultimate Fix: Weighted HSV Nearest-Neighbor
+            # Using rigid if-else fails because True Orange and Warm White overlap heavily on cheap webcams.
+            # Instead, we measure the 'distance' to realistic webcam profiles.
             pixel_bgr = np.uint8([[[avg_b, avg_g, avg_r]]])
             hsv = cv2.cvtColor(pixel_bgr, cv2.COLOR_BGR2HSV)[0][0]
-            h, s, v = hsv
+            h, s, v = int(hsv[0]), int(hsv[1]), int(hsv[2])
             
-            # 1. Warm light pushes White into the Red/Orange spectrum (0 < H < 25).
-            # By requiring a much higher saturation (S > 130) to qualify as a "real" Red/Orange,
-            # we safely trap warm White tiles.
-            if (h < 25 or h > 165) and s < 130:
-                best_color = 'White'
-            # 2. Washed out Yellow (H ~ 30) loses saturation but rarely drops below S=60.
-            # So a strict S < 60 check for the rest of the hues prevents washed Yellow from becoming White.
-            elif s < 60:
-                best_color = 'White'
-            # 3. Standard Hue mapping
-            elif h < 10 or h > 165:
-                best_color = 'Red'
-            elif h < 25:
-                best_color = 'Orange'
-            elif h < 45:
-                best_color = 'Yellow'
-            elif h < 85:
-                best_color = 'Green'
-            elif h < 140:
-                best_color = 'Blue'
-            else:
-                best_color = 'Red' # Fallback
+            # These are actual typical webcam HSV centers, NOT ideal RGB #FFFFFF (which fails)
+            std_colors = {
+                'White':  (0, 30, 200),
+                'Yellow': (30, 140, 200), # Yellow inherently loses saturation easily on cameras
+                'Orange': (13, 170, 200),
+                'Red':    (0,  180, 150),
+                'Green':  (65, 140, 150),
+                'Blue':   (110, 150, 150)
+            }
+            
+            min_dist = float('inf')
+            best_color = 'White'
+            
+            for c_name, (h_std, s_std, v_std) in std_colors.items():
+                if c_name == 'White':
+                    # White ignores Hue! Distance is governed strictly by how close Sat is to 0 (30).
+                    # We penalize Saturation heavily (1.5) to keep it from swallowing real colors.
+                    dist = ((s - s_std) * 1.5)**2 + ((v - v_std) * 0.5)**2
+                else:
+                    # Hue wraps around 180 in OpenCV
+                    dh = min(abs(h - h_std), 180 - abs(h - h_std))
+                    # Hue is weighted 3.0x because it's the strongest identifier for matching chromaticity
+                    dist = (dh * 3.0)**2 + ((s - s_std) * 1.0)**2 + ((v - v_std) * 0.2)**2
+                    
+                if dist < min_dist:
+                    min_dist = dist
+                    best_color = c_name
                 
             detected_colors.append(best_color)
             
