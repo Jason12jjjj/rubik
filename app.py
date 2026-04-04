@@ -47,26 +47,34 @@ if 'cube_size' not in st.session_state:
 c_size = st.session_state.get('cube_size', 50)
 st.markdown(f"""
 <style>
-    /* This creates a 3x3 aiming grid over the Streamlit camera */
-    [data-testid="stCameraInput"] > div:first-child::after {{
+    [data-testid="stCameraInput"] {
+        position: relative;
+    }
+    /* Bind the grid directly to the camera container and elevate z-index */
+    [data-testid="stCameraInput"]::after {
         content: "";
+        display: block;
         position: absolute;
         top: 50%; left: 50%;
         transform: translate(-50%, -50%);
-        width: {c_size}%;
-        max-width: {c_size}vh;
-        aspect-ratio: 1 / 1;
-        border: 3px solid rgba(0, 255, 0, 0.8);
-        pointer-events: none; /* Let clicks pass through */
-        box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5); /* Darken surroundings */
         
-        /* Draw the internal 3x3 Grid lines */
+        /* Use percentage bounds for perfect alignment */
+        width: {c_size}%;
+        height: auto;
+        aspect-ratio: 1 / 1;
+        z-index: 999; /* Ensure it stays above the video feed */
+        
+        border: 4px solid rgba(0, 255, 0, 0.9);
+        pointer-events: none;
+        box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.3); /* Transparent dark surroundings */
+        
+        /* 3x3 Grid */
         background-image: 
-            linear-gradient(to right, transparent 33.33%, rgba(0, 255, 0, 0.6) 33.33%, rgba(0, 255, 0, 0.6) calc(33.33% + 2px), transparent calc(33.33% + 2px)),
-            linear-gradient(to right, transparent 66.66%, rgba(0, 255, 0, 0.6) 66.66%, rgba(0, 255, 0, 0.6) calc(66.66% + 2px), transparent calc(66.66% + 2px)),
-            linear-gradient(to bottom, transparent 33.33%, rgba(0, 255, 0, 0.6) 33.33%, rgba(0, 255, 0, 0.6) calc(33.33% + 2px), transparent calc(33.33% + 2px)),
-            linear-gradient(to bottom, transparent 66.66%, rgba(0, 255, 0, 0.6) 66.66%, rgba(0, 255, 0, 0.6) calc(66.66% + 2px), transparent calc(66.66% + 2px));
-    }}
+            linear-gradient(to right, transparent 33.33%, rgba(0, 255, 0, 0.7) 33.33%, rgba(0, 255, 0, 0.7) calc(33.33% + 2px), transparent calc(33.33% + 2px)),
+            linear-gradient(to right, transparent 66.66%, rgba(0, 255, 0, 0.7) 66.66%, rgba(0, 255, 0, 0.7) calc(66.66% + 2px), transparent calc(66.66% + 2px)),
+            linear-gradient(to bottom, transparent 33.33%, rgba(0, 255, 0, 0.7) 33.33%, rgba(0, 255, 0, 0.7) calc(33.33% + 2px), transparent calc(33.33% + 2px)),
+            linear-gradient(to bottom, transparent 66.66%, rgba(0, 255, 0, 0.7) 66.66%, rgba(0, 255, 0, 0.7) calc(66.66% + 2px), transparent calc(66.66% + 2px));
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -303,5 +311,6 @@ elif app_mode == "⚙️ Tune Colors":
         
         if st.button(f"✅ Save as new standard for {calib_color}", type="primary"):
             st.session_state.custom_std_colors[calib_color] = (h, s, v)
-            st.success(f"Success! The AI now knows what your {calib_color} looks like.")
-            st.rerun()
+            
+        if calib_color in st.session_state.custom_std_colors and st.session_state.custom_std_colors[calib_color] == (h, s, v):
+            st.success(f"🎉 Success! The AI has successfully learned your new {calib_color} standard.")
