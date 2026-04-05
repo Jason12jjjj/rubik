@@ -203,7 +203,7 @@ def get_calibrated_colors():
 
 
 def classify_color(bgr_pixel, std_colors):
-    # Convert incoming pixel to CIE LAB color space
+    # Convert incoming pixel to CIE LAB color space for perpetual uniformity
     pixel_bgr = np.uint8([[[bgr_pixel[0], bgr_pixel[1], bgr_pixel[2]]]])
     pixel_lab = cv2.cvtColor(pixel_bgr, cv2.COLOR_BGR2LAB)[0][0]
     l, a, b = int(pixel_lab[0]), int(pixel_lab[1]), int(pixel_lab[2])
@@ -212,19 +212,20 @@ def classify_color(bgr_pixel, std_colors):
     best_color = 'White'
     
     for c_name, (h_std, s_std, v_std) in std_colors.items():
-        # Convert tuned HSV standard to LAB
+        # Convert tuned HSV standard back to LAB
         std_hsv = np.uint8([[[h_std, s_std, v_std]]])
         std_bgr = cv2.cvtColor(std_hsv, cv2.COLOR_HSV2BGR)
         std_lab = cv2.cvtColor(std_bgr, cv2.COLOR_BGR2LAB)[0][0]
         l_std, a_std, b_std = int(std_lab[0]), int(std_lab[1]), int(std_lab[2])
         
-        # LAB is designed for human visual perception.
-        # We heavily weight a and b (chromaticity / true color) to ignore shadows/glares (l).
-        # We also specifically add a small safety mechanism for White to prevent it from overwhelming Pale Yellows
-        if c_name == 'White':
-            dist = ((a - a_std) * 2.0)**2 + ((b - b_std) * 2.0)**2 + ((l - l_std) * 0.3)**2
-        else:
-            dist = ((a - a_std) * 2.0)**2 + ((b - b_std) * 2.0)**2 + ((l - l_std) * 0.1)**2
+        # LAB is widely considered the gold standard for Colorimetry.
+        # We heavily weight 'a' and 'b' (True Color Vectors) to ignore shadows/glares 'L' (Luminance).
+        
+        # Special case: White intrinsically lacks a/b chroma, so L* difference matters slightly more
+        # to prevent extremely dark grey shadows from being claimed as white.
+        weight_L = 0.5 if c_name == 'White' else 0.15
+        
+        dist = ((a - a_std) * 2.0) ** 2 + ((b - b_std) * 2.0) ** 2 + ((l - l_std) * weight_L) ** 2
 
         if dist < min_dist:
             min_dist   = dist
@@ -312,7 +313,8 @@ def extract_colors_from_image(image_bytes, expected_center):
             cv2.putText(debug_img, detected_colors[idx], (cx - 20, cy + 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
 
-    detected_colors[4] = expected_center
+    # We no longer gracefully overwrite the center here. 
+    # We return the raw detected center so the UI can strictly validate if the user scanned the correct face.
     return detected_colors, cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB), detection_method
 
 
@@ -498,6 +500,19 @@ if app_mode == "📸 Scan & Solve":
                 if hasattr(active_buffer, 'seek'):
                     active_buffer.seek(0)
                 detected, debug_img, method = extract_colors_from_image(active_buffer, CENTER_COLORS[current_face])
+                
+                # Center Face Validation (Anti-Mistake Shield)
+                if detected[4] != CENTER_COLORS[current_face]:
+                    st.error(f"❌ **Wrong Face Scanned!** Your camera detected a **{detected[4]}** center, but this is the **{current_face} ({CENTER_COLORS[current_face]})** slot.")
+                    st.warning("Please ensure you are holding the correct side of the Rubik's cube facing the camera.")
+                    # Delete the bad photo record so the UI doesn't pretend it succeeded
+                    if current_face in st.session_state.processed_photos:
+                        del st.session_state.processed_photos[current_face]
+                    st.stop()
+
+                # Force the center to be perfect just in case the algorithm needs strict Kociemba safety
+                detected[4] = CENTER_COLORS[current_face]
+
                 st.session_state.cube_state[current_face] = detected
                 st.session_state[f"debug_{current_face}"] = debug_img
                 st.session_state[f"method_{current_face}"] = method
