@@ -221,15 +221,11 @@ def classify_color(bgr_pixel, std_colors):
         # LAB is widely considered the gold standard for Colorimetry.
         # We heavily weight 'a' and 'b' (True Color Vectors) to ignore shadows/glares 'L' (Luminance).
         
-        if c_name in ['Red', 'Orange']:
-            # Red and Orange are notoriously close in Hue but differ in Luminance.
-            # We must use standard Euclidean LAB distance (Weight 1:1:1) to separate them.
-            dist = (float(a) - a_std)**2 + (float(b) - b_std)**2 + (float(l) - l_std)**2
-        else:
-            # Special case: White intrinsically lacks a/b chroma, so L* difference matters slightly more
-            # to prevent extremely dark grey shadows from being claimed as white.
-            weight_L = 0.5 if c_name == 'White' else 0.15
-            dist = ((a - a_std) * 2.0) ** 2 + ((b - b_std) * 2.0) ** 2 + ((l - l_std) * weight_L) ** 2
+        # Special case: White intrinsically lacks a/b chroma, so L* difference matters slightly more
+        # to prevent extremely dark grey shadows from being claimed as white.
+        weight_L = 0.5 if c_name == 'White' else 0.15
+        
+        dist = ((a - a_std) * 2.0) ** 2 + ((b - b_std) * 2.0) ** 2 + ((l - l_std) * weight_L) ** 2
 
         if dist < min_dist:
             min_dist   = dist
@@ -297,6 +293,23 @@ def extract_colors_from_image(image_bytes, expected_center):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, color_box, 2)
 
     detected_colors = ['White'] * 9
+
+    # ── DYNAMIC LOCAL CALIBRATION (Shadow/Gradient Compensator) ──
+    # If the user scans the correct face, we anchor the standard hue for THIS face's
+    # dominant color precisely to the center tile's exact lighting. This prevents 
+    # dark corners on the dominant face from bleeding into other color clusters.
+    cx_ctr = start_x + 1 * cell_size + cell_size // 2
+    cy_ctr = start_y + 1 * cell_size + cell_size // 2
+    roi_ctr = img[max(0, cy_ctr - 5):min(h_img, cy_ctr + 5), max(0, cx_ctr - 5):min(w_img, cx_ctr + 5)]
+    
+    if roi_ctr.size > 0:
+        c_b, c_g, c_r = np.median(roi_ctr, axis=(0, 1)).astype(np.uint8)
+        # Verify it natively first so we don't accidentally hijack a completely wrong face
+        if classify_color((c_b, c_g, c_r), std_colors) == expected_center:
+            hsv = cv2.cvtColor(np.uint8([[[c_b, c_g, c_r]]]), cv2.COLOR_BGR2HSV)[0][0]
+            # Override global setting just for this local image frame loop
+            std_colors[expected_center] = (int(hsv[0]), int(hsv[1]), int(hsv[2]))
+            
     for row in range(3):
         for col in range(3):
             cx = start_x + col * cell_size + cell_size // 2
