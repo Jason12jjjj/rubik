@@ -21,22 +21,46 @@ def validate_cube_state(faces_data):
     A valid cube must have exactly 9 squares of each of the 6 colors.
     """
     color_counts = {'White': 0, 'Red': 0, 'Green': 0, 'Yellow': 0, 'Orange': 0, 'Blue': 0}
+    
+    # Track which faces contain which colors to help the user find errors
+    color_locations = {c: set() for c in color_counts.keys()}
 
     for face, colors in faces_data.items():
-        # FIX #10: each face must have exactly 9 squares
         if len(colors) != 9:
             return False, f"{face} face has {len(colors)} squares — expected exactly 9."
         for color in colors:
             if color in color_counts:
                 color_counts[color] += 1
+                color_locations[color].add(face)
             else:
                 return False, f"Invalid color detected on {face} face: '{color}'"
 
+    too_many = []
+    too_few  = []
     for color, count in color_counts.items():
-        if count != 9:
-            return False, f"Validation Failed: Found {count} {color} squares. Must be exactly 9."
+        if count > 9:     too_many.append((color, count))
+        elif count < 9:   too_few.append((color, count))
 
-    return True, "Cube state is valid."
+    if not too_many and not too_few:
+        return True, "Cube state is valid."
+
+    # Build a highly descriptive error message pinpointing the exact issue
+    err_parts = []
+    if too_many:
+        err_parts.append("太多了(>9): " + ", ".join([f"{c}有{cnt}个" for c, cnt in too_many]))
+    if too_few:
+        err_parts.append("太少了(<9): " + ", ".join([f"{c}有{cnt}个" for c, cnt in too_few]))
+        
+    problem_colors = [c for c, cnt in too_many] + [c for c, cnt in too_few]
+    suspect_faces  = set()
+    for pc in problem_colors:
+        suspect_faces.update(color_locations[pc])
+        
+    err_msg = " | ".join(err_parts)
+    if suspect_faces:
+        err_msg += f" ➡️ 请重点检查这几个面是否有错: {', '.join(suspect_faces)} 面。"
+
+    return False, err_msg
 
 def solve_cube(faces_data):
     """
