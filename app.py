@@ -231,6 +231,14 @@ def classify_color(bgr_pixel, std_colors):
             min_dist   = dist
             best_color = c_name
             
+    # Physics Override: Red vs Orange overlap in deep shadows.
+    # Orange physically contains more green light than Red. If it classified as Red, 
+    # but strongly exhibits an Orange G/R ratio, it is a non-dominant shielded Orange sticker.
+    if best_color == 'Red' and int(bgr_pixel[2]) > 0:
+        g_r_ratio = float(bgr_pixel[1]) / float(bgr_pixel[2])
+        if g_r_ratio > 0.30:
+            best_color = 'Orange'
+            
     return best_color
 
 
