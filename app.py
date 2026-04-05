@@ -8,6 +8,7 @@ import numpy as np
 import cv2
 import streamlit as st
 import streamlit.components.v1 as components
+from streamlit_image_coordinates import streamlit_image_coordinates
 from rubiks_core import validate_cube_state, solve_cube
 
 # --- 1. System Configuration & State Management ---
@@ -106,6 +107,7 @@ if not st.session_state.get('auto_detect', True):
 
 def auto_advance(nf):
     st.session_state.face_selector = nf
+    st.session_state.uploader_key_version += 1
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -425,18 +427,6 @@ with st.sidebar:
     app_mode = st.radio("Choose Mode:", ["📸 Scan & Solve", "⚙️ Tune Colors"])
     st.divider()
 
-    st.markdown("## 🤖 Detection Mode")
-    auto_detect_on = st.toggle("✨ Auto-Detect Cube", value=st.session_state.auto_detect,
-                               help="When ON, AI will automatically locate the Rubik's cube face in your photo—no centering needed!")
-    st.session_state.auto_detect = auto_detect_on
-
-    if not auto_detect_on:
-        st.markdown("## 📐 Manual Grid Size")
-        st.slider("📏 Grid Size", min_value=30, max_value=80, key="cube_size",
-                  help="Resize the targeting box to fit your cube in the centre of the camera.")
-
-    st.divider()
-
     if app_mode == "📸 Scan & Solve":
         active = st.session_state.get('face_selector', FACES[0])
         st.markdown("## 🗺️ Live Cube Map")
@@ -448,9 +438,23 @@ with st.sidebar:
         st.caption(f"{scanned}/6 faces scanned. Switch to Scan & Solve to see the map.")
 
     st.divider()
-    if st.button("🗑️ Clear All Shared Photos", use_container_width=True):
-        st.session_state.shared_face_images = {}
-        st.rerun()
+    
+    advanced_mode = st.toggle("⚙️ Advanced Settings", value=False)
+    if advanced_mode:
+        st.markdown("### 🤖 Detection Mode")
+        auto_detect_on = st.checkbox("✨ Auto-Detect Cube", value=st.session_state.auto_detect,
+                                   help="When ON, AI will automatically locate the Rubik's cube face in your photo—no centering needed!")
+        st.session_state.auto_detect = auto_detect_on
+
+        if not auto_detect_on:
+            st.markdown("### 📐 Manual Grid Size")
+            st.slider("📏 Grid Size", min_value=30, max_value=80, key="cube_size",
+                      help="Resize the targeting box to fit your cube in the centre of the camera.")
+
+        st.divider()
+        if st.button("🗑️ Clear All Shared Photos", use_container_width=True):
+            st.session_state.shared_face_images = {}
+            st.rerun()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -478,6 +482,20 @@ if app_mode == "📸 Scan & Solve":
     if st.session_state.custom_std_colors:
         st.success(f"🧠 Custom lighting active for: {', '.join(st.session_state.custom_std_colors.keys())}")
 
+    def render_orientation_guide(face):
+        center_col = CENTER_COLORS[face]
+        top_col = {'Up':'Blue', 'Left':'White', 'Front':'White', 'Right':'White', 'Back':'White', 'Down':'Green'}[face]
+        return f"""
+        <div style="display: flex; flex-direction: column; align-items: center; padding: 10px; border: 2px dashed #444; border-radius: 8px; width: fit-content; margin-bottom: 15px;">
+            <span style="font-size: 11px; font-weight: bold; color: #ffeb3b; margin-bottom: 4px; text-transform: uppercase;">⬆️ Top edge of Camera ⬆️</span>
+            <div style="width: 60px; height: 20px; background-color: {HEX_COLORS[top_col]}; border: 2px solid #222; border-radius: 4px 4px 0 0; margin-bottom: 2px; box-shadow: inset 0 0 5px rgba(0,0,0,0.3);"></div>
+            <div style="width: 60px; height: 60px; background-color: {HEX_COLORS[center_col]}; border: 2px solid #222; border-radius: 0 0 4px 4px; display: flex; align-items: center; justify-content: center; font-size: 24px; box-shadow: inset 0 0 10px rgba(0,0,0,0.3);">
+                {COLOR_EMOJIS[center_col]}
+            </div>
+            <span style="font-size: 12px; font-weight: bold; color: #fff; margin-top: 6px;">Hold like this</span>
+        </div>
+        """
+
     current_face = st.radio(
         "🧭 **Select which face you are scanning:**", FACES,
         format_func=lambda x: f"{COLOR_EMOJIS[CENTER_COLORS[x]]} {x} Face",
@@ -490,6 +508,7 @@ if app_mode == "📸 Scan & Solve":
         st.session_state.uploader_key_version += 1
 
     st.info(f"🧭 **HOW TO HOLD:** {ORIENTATION_GUIDE[current_face]}")
+    st.markdown(render_orientation_guide(current_face), unsafe_allow_html=True)
 
     col_camera, col_manual = st.columns([1, 1])
 
@@ -687,15 +706,10 @@ elif app_mode == "⚙️ Tune Colors":
 
             st.markdown("---")
 
-        # ── Fine-tune crosshair ──────────────────────────────────────────────
-        st.write("#### 🎯 Fine-tune Targeting")
-        st.write("Steer the crosshair to the exact color you want to sample.")
-        off_col1, off_col2 = st.columns(2)
-        with off_col1:
-            offset_x = st.slider("➡️ Horizontal (%)", -50, 50, 0, key=f"calib_x_{calib_color}")
-        with off_col2:
-            offset_y = st.slider("⬇️ Vertical (%)", -50, 50, 0, key=f"calib_y_{calib_color}")
-
+        # ── Point and Click Calibration ──────────────────────────────────────────────
+        st.write("#### 🎯 Point and Click Calibration")
+        st.write("Click directly on the exact color sticker in the image below to sample its physical color.")
+        
         img = cv2.imdecode(np.asarray(bytearray(raw_bytes), dtype=np.uint8), 1)
 
         if img is None:
@@ -703,8 +717,23 @@ elif app_mode == "⚙️ Tune Colors":
             st.stop()
 
         h_img, w_img = img.shape[:2]
-        cx = int(w_img / 2 + w_img * (offset_x / 100.0))
-        cy = int(h_img / 2 + h_img * (offset_y / 100.0))
+        
+        # Display image and get click coordinates
+        # Use a bounding box to keep the UI clean and prevent massive images from taking over
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        
+        value = streamlit_image_coordinates(
+            img_rgb,
+            key=f"calib_click_{calib_color}_{cv}"
+        )
+        
+        if value is None:
+            # Default to center if not clicked yet
+            cx, cy = w_img // 2, h_img // 2
+            st.info("👆 Click anywhere on the image above to sample the color at that point.")
+        else:
+            cx, cy = value["x"], value["y"]
+
         cx = max(10, min(w_img - 10, cx))
         cy = max(10, min(h_img - 10, cy))
 
@@ -716,15 +745,14 @@ elif app_mode == "⚙️ Tune Colors":
         h, s, v = int(hsv[0]), int(hsv[1]), int(hsv[2])
 
         debug_img = img.copy()
-        cv2.rectangle(debug_img, (cx - 22, cy - 22), (cx + 22, cy + 22), (255, 255, 255), 3)
-        cv2.line(debug_img, (cx - 32, cy), (cx + 32, cy), (0, 255, 0), 2)
-        cv2.line(debug_img, (cx, cy - 32), (cx, cy + 32), (0, 255, 0), 2)
+        cv2.circle(debug_img, (cx, cy), 15, (255, 255, 255), 4)
+        cv2.circle(debug_img, (cx, cy), 15, (0, 0, 0), 2)
         debug_img_rgb = cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB)
 
         st.write("#### 📊 Captured Sample")
         c1, c2 = st.columns([1, 1])
         with c1:
-            st.image(debug_img_rgb, caption="Crosshair position")
+            st.image(debug_img_rgb, caption="Selected Position")
         with c2:
             sample_hex = '#{:02x}{:02x}{:02x}'.format(int(avg_r), int(avg_g), int(avg_b))
             st.markdown(f'<div style="width:100px;height:100px;background-color:{sample_hex};border:2px solid white;border-radius:10px;margin-bottom:8px;"></div>', unsafe_allow_html=True)
