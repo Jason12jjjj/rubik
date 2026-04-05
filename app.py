@@ -441,17 +441,6 @@ with st.sidebar:
     
     advanced_mode = st.toggle("⚙️ Advanced Settings", value=False)
     if advanced_mode:
-        st.markdown("### 🤖 Detection Mode")
-        auto_detect_on = st.checkbox("✨ Auto-Detect Cube", value=st.session_state.auto_detect,
-                                   help="When ON, AI will automatically locate the Rubik's cube face in your photo—no centering needed!")
-        st.session_state.auto_detect = auto_detect_on
-
-        if not auto_detect_on:
-            st.markdown("### 📐 Manual Grid Size")
-            st.slider("📏 Grid Size", min_value=30, max_value=80, key="cube_size",
-                      help="Resize the targeting box to fit your cube in the centre of the camera.")
-
-        st.divider()
         if st.button("🗑️ Clear All Shared Photos", use_container_width=True):
             st.session_state.shared_face_images = {}
             st.rerun()
