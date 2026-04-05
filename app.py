@@ -113,8 +113,9 @@ def auto_advance(nf):
 # ─────────────────────────────────────────────────────────────────────────────
 def auto_detect_cube_region(img):
     h_img, w_img = img.shape[:2]
-    min_area   = (min(h_img, w_img) * 0.18) ** 2
-    max_area   = (min(h_img, w_img) * 0.99) ** 2 # Relaxed to 0.99 for tightly cropped photos
+    # Restrict to realistic sizes
+    min_area = (min(h_img, w_img) * 0.25) ** 2
+    max_area = (min(h_img, w_img) * 0.95) ** 2
 
     def score_contours(cnts):
         best = None
@@ -124,53 +125,67 @@ def auto_detect_cube_region(img):
             if area < min_area or area > max_area:
                 continue
 
-            peri   = cv2.arcLength(cnt, True)
+            peri = cv2.arcLength(cnt, True)
             approx = cv2.approxPolyDP(cnt, 0.04 * peri, True)
             x, y, w, bh = cv2.boundingRect(cnt)
 
+            # A cube face must be roughly a perfect square. Force tight aspect ratio.
             aspect = min(w, bh) / max(w, bh)
-            if aspect < 0.65:
+            if aspect < 0.82:
                 continue
 
-            side = int(min(w, bh) * 0.95)
+            # It MUST be predominantly in the center of the camera.
+            cx = x + w / 2.0
+            cy = y + bh / 2.0
+            dist_to_center = ((cx - w_img / 2.0) ** 2 + (cy - h_img / 2.0) ** 2) ** 0.5
+            max_dist = ((w_img / 2.0) ** 2 + (h_img / 2.0) ** 2) ** 0.5
+            # Center weight: 1.0 at center, drops off as it moves to edge
+            center_weight = max(0.1, 1.0 - (dist_to_center / max_dist))
+            
+            # Substantial penalty if it's heavily off-center (user is expected to center the cube)
+            if dist_to_center > min(w_img, h_img) * 0.35:
+                continue
+
+            # Exact square bonus
+            shape_bonus = 3.0 if len(approx) == 4 else (1.5 if len(approx) in [5, 6] else 0.5)
+
+            side = int(min(w, bh) * 0.92) # Contract slightly to avoid sampling edges
             if side <= 0:
                 continue
 
-            shape_bonus = 1.3 if 4 <= len(approx) <= 6 else 1.0
-            score       = area * aspect * shape_bonus
+            score = area * aspect * shape_bonus * (center_weight ** 2)
 
             if score > best_score:
                 best_score = score
-                cx  = x + w  // 2
-                cy  = y + bh // 2
-                sx  = max(0, cx - side // 2)
-                sy  = max(0, cy - side // 2)
-                sx  = min(sx, w_img - side)
-                sy  = min(sy, h_img - side)
-                best = (sx, sy, side)
+                bx = int(cx - side / 2.0)
+                by = int(cy - side / 2.0)
+                # Keep bounds inside image
+                bx = max(0, min(bx, w_img - side))
+                by = max(0, min(by, h_img - side))
+                best = (bx, by, side)
         return best
 
-    # ── Pass 1: Saturation Masking (Best for coloured faces) ──
-    hsv      = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    mask_sat = cv2.inRange(hsv, (0, 40, 40), (180, 255, 255))
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
-    clean  = cv2.morphologyEx(mask_sat, cv2.MORPH_CLOSE, kernel, iterations=3)
-    clean  = cv2.morphologyEx(clean,   cv2.MORPH_OPEN,  kernel, iterations=2)
-    cnts, _ = cv2.findContours(clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    best_region = score_contours(cnts)
-    if best_region is not None:
-        return best_region
-
-    # ── Pass 2: Edge Detection Fallback (Best for White face or low saturation) ──
+    # ── Pass 1: Canny Edge Detection (Highly effective for grid structures) ──
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(blurred, 30, 150)
+    edges = cv2.Canny(blurred, 40, 120)
     kernel_edge = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     closed_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel_edge, iterations=2)
     cnts_edge, _ = cv2.findContours(closed_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    return score_contours(cnts_edge)
+    best_region = score_contours(cnts_edge)
+    if best_region is not None:
+        return best_region
+
+    # ── Pass 2: Saturation Masking (Fallback for coloured faces lacking contrast) ──
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    mask_sat = cv2.inRange(hsv, (0, 45, 45), (180, 255, 255))
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+    clean = cv2.morphologyEx(mask_sat, cv2.MORPH_CLOSE, kernel, iterations=3)
+    clean = cv2.morphologyEx(clean, cv2.MORPH_OPEN, kernel, iterations=2)
+    cnts, _ = cv2.findContours(clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    return score_contours(cnts)
 
 
 def get_calibrated_colors():
@@ -188,21 +203,33 @@ def get_calibrated_colors():
 
 
 def classify_color(bgr_pixel, std_colors):
+    # Convert incoming pixel to CIE LAB color space
     pixel_bgr = np.uint8([[[bgr_pixel[0], bgr_pixel[1], bgr_pixel[2]]]])
-    hsv = cv2.cvtColor(pixel_bgr, cv2.COLOR_BGR2HSV)[0][0]
-    h, s, v = int(hsv[0]), int(hsv[1]), int(hsv[2])
+    pixel_lab = cv2.cvtColor(pixel_bgr, cv2.COLOR_BGR2LAB)[0][0]
+    l, a, b = int(pixel_lab[0]), int(pixel_lab[1]), int(pixel_lab[2])
 
     min_dist   = float('inf')
     best_color = 'White'
+    
     for c_name, (h_std, s_std, v_std) in std_colors.items():
+        # Convert tuned HSV standard to LAB
+        std_hsv = np.uint8([[[h_std, s_std, v_std]]])
+        std_bgr = cv2.cvtColor(std_hsv, cv2.COLOR_HSV2BGR)
+        std_lab = cv2.cvtColor(std_bgr, cv2.COLOR_BGR2LAB)[0][0]
+        l_std, a_std, b_std = int(std_lab[0]), int(std_lab[1]), int(std_lab[2])
+        
+        # LAB is designed for human visual perception.
+        # We heavily weight a and b (chromaticity / true color) to ignore shadows/glares (l).
+        # We also specifically add a small safety mechanism for White to prevent it from overwhelming Pale Yellows
         if c_name == 'White':
-            dist = ((s - s_std) * 1.5) ** 2 + ((v - v_std) * 0.5) ** 2
+            dist = ((a - a_std) * 2.0)**2 + ((b - b_std) * 2.0)**2 + ((l - l_std) * 0.3)**2
         else:
-            dh   = min(abs(h - h_std), 180 - abs(h - h_std))
-            dist = (dh * 3.0) ** 2 + ((s - s_std) * 1.0) ** 2 + ((v - v_std) * 0.2) ** 2
+            dist = ((a - a_std) * 2.0)**2 + ((b - b_std) * 2.0)**2 + ((l - l_std) * 0.1)**2
+
         if dist < min_dist:
             min_dist   = dist
             best_color = c_name
+            
     return best_color
 
 
@@ -225,9 +252,9 @@ def extract_colors_from_image(image_bytes, expected_center):
     if region is None:
         if st.session_state.get('auto_detect', True):
             # If Auto-Detect was requested but algorithms couldn't find a crisp outline
-            # (e.g. image is perfectly cropped, blurry, or very close up),
-            # fallback to assuming the cube heavily dominates the frame (90%).
-            grid_size  = int(min(h_img, w_img) * 0.90)
+            # (e.g. background interference or blurry), fallback to a realistic 60% centered box.
+            # (90% is too large for normal webcam use and causes the sample points to miss)
+            grid_size  = int(min(h_img, w_img) * 0.60)
             start_x    = (w_img - grid_size) // 2
             start_y    = (h_img - grid_size) // 2
             detection_method = "auto"
