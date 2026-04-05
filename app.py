@@ -221,11 +221,15 @@ def classify_color(bgr_pixel, std_colors):
         # LAB is widely considered the gold standard for Colorimetry.
         # We heavily weight 'a' and 'b' (True Color Vectors) to ignore shadows/glares 'L' (Luminance).
         
-        # Special case: White intrinsically lacks a/b chroma, so L* difference matters slightly more
-        # to prevent extremely dark grey shadows from being claimed as white.
-        weight_L = 0.5 if c_name == 'White' else 0.15
-        
-        dist = ((a - a_std) * 2.0) ** 2 + ((b - b_std) * 2.0) ** 2 + ((l - l_std) * weight_L) ** 2
+        if c_name in ['Red', 'Orange']:
+            # Red and Orange are notoriously close in Hue but differ in Luminance.
+            # We must use standard Euclidean LAB distance (Weight 1:1:1) to separate them.
+            dist = (float(a) - a_std)**2 + (float(b) - b_std)**2 + (float(l) - l_std)**2
+        else:
+            # Special case: White intrinsically lacks a/b chroma, so L* difference matters slightly more
+            # to prevent extremely dark grey shadows from being claimed as white.
+            weight_L = 0.5 if c_name == 'White' else 0.15
+            dist = ((a - a_std) * 2.0) ** 2 + ((b - b_std) * 2.0) ** 2 + ((l - l_std) * weight_L) ** 2
 
         if dist < min_dist:
             min_dist   = dist
