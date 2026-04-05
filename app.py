@@ -437,13 +437,9 @@ with st.sidebar:
         scanned = len(st.session_state.processed_photos)
         st.caption(f"{scanned}/6 faces scanned. Switch to Scan & Solve to see the map.")
 
-    st.divider()
-    
-    advanced_mode = st.toggle("⚙️ Advanced Settings", value=False)
-    if advanced_mode:
-        if st.button("🗑️ Clear All Shared Photos", use_container_width=True):
-            st.session_state.shared_face_images = {}
-            st.rerun()
+    if st.button("🗑️ Clear All Shared Photos", use_container_width=True):
+        st.session_state.shared_face_images = {}
+        st.rerun()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
