@@ -584,23 +584,20 @@ if app_mode == "📸 Scan & Solve":
                               key=f"lock_{current_face}", disabled=True, use_container_width=True)
                 else:
                     cur_c = current_face_colors[i]
-                    if st.button(f"{COLOR_EMOJIS[cur_c]} {cur_c}",
-                                 key=f"btn_{current_face}_{i}", use_container_width=True):
-                        ni = (AVAILABLE_COLORS.index(cur_c) + 1) % len(AVAILABLE_COLORS)
-                        current_face_colors[i] = AVAILABLE_COLORS[ni]
-                        st.session_state.cube_state[current_face] = current_face_colors
-                        st.session_state.last_solution = None
-                        st.rerun()
+                    with st.popover(f"{COLOR_EMOJIS[cur_c]} {cur_c}", use_container_width=True):
+                        st.write("Select color:")
+                        for pc in AVAILABLE_COLORS:
+                            if st.button(f"{COLOR_EMOJIS[pc]} {pc}", key=f"sel_{current_face}_{i}_{pc}", use_container_width=True):
+                                current_face_colors[i] = pc
+                                st.session_state.cube_state[current_face] = current_face_colors
+                                st.session_state.last_solution = None
+                                st.rerun()
 
         st.divider()
 
         next_idx = (FACES.index(current_face) + 1) % 6
         if next_idx == 0:
-            st.success("🎉 All 6 faces scanned! Click Validate & Solve below.")
-        else:
-            next_f = FACES[next_idx]
-            st.button(f"🚀 Looks Good! Proceed to **{next_f} Face** ➡️",
-                      on_click=auto_advance, args=(next_f,), use_container_width=True)
+            st.success("🎉 All 6 faces scanned! You can click Validate & Solve below.")
 
     st.divider()
 
@@ -646,6 +643,19 @@ if app_mode == "📸 Scan & Solve":
                 format_func=lambda x: f"{x}x"
             )
             render_3d_solution(solution, speed)
+            
+            st.divider()
+            st.markdown("### 🔄 Done solving?")
+            if st.button("Scan Another Cube", type="primary", use_container_width=True):
+                st.session_state.processed_photos = {}
+                for face in FACES:
+                    default_face = ['White'] * 9
+                    default_face[4] = CENTER_COLORS[face]
+                    st.session_state.cube_state[face] = default_face
+                st.session_state.last_solution = None
+                st.session_state.face_selector = FACES[0]
+                st.session_state.uploader_key_version += 1
+                st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
