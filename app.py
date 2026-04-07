@@ -463,6 +463,10 @@ if app_mode == "📸 Scan & Solve":
     if st.session_state.custom_std_colors:
         st.success(f"🧠 Custom lighting active for: {', '.join(st.session_state.custom_std_colors.keys())}")
 
+    if st.session_state.get('scan_success_msg'):
+        st.success(st.session_state.scan_success_msg)
+        st.session_state.scan_success_msg = None
+
     def render_orientation_guide(face):
         center_col = CENTER_COLORS[face]
         top_col = {'Up':'Blue', 'Left':'White', 'Front':'White', 'Right':'White', 'Back':'White', 'Down':'Green'}[face]
@@ -549,6 +553,16 @@ if app_mode == "📸 Scan & Solve":
                 st.session_state[f"method_{current_face}"] = method
                 st.session_state.processed_photos[current_face] = cache_key
                 st.session_state.last_solution = None
+
+                st.session_state.scan_success_msg = f"🎉 **{current_face} Face** scanned successfully."
+                unscanned = [f for f in FACES if f not in st.session_state.processed_photos]
+                if unscanned:
+                    st.session_state.face_selector = unscanned[0]
+                    st.session_state.uploader_key_version += 1
+                    st.session_state.scan_success_msg += f" Auto-advanced to **{unscanned[0]} Face**."
+                else:
+                    st.session_state.scan_success_msg += " All 6 faces are ready to solve!"
+
                 st.rerun()
 
         if f"debug_{current_face}" in st.session_state:
@@ -563,6 +577,11 @@ if app_mode == "📸 Scan & Solve":
         st.write("Read Left-to-Right, Top-to-Bottom.")
         grid_cols = st.columns(3)
         current_face_colors = st.session_state.cube_state[current_face]
+
+        def update_tile_color(face, idx):
+            st.session_state.cube_state[face][idx] = st.session_state[f"sel_{face}_{idx}"]
+            st.session_state.last_solution = None
+
         for i in range(9):
             col_idx = i % 3
             with grid_cols[col_idx]:
@@ -571,14 +590,16 @@ if app_mode == "📸 Scan & Solve":
                               key=f"lock_{current_face}", disabled=True, use_container_width=True)
                 else:
                     cur_c = current_face_colors[i]
-                    with st.popover(f"{COLOR_EMOJIS[cur_c]} {cur_c}", use_container_width=True):
-                        st.write("Select color:")
-                        for pc in AVAILABLE_COLORS:
-                            if st.button(f"{COLOR_EMOJIS[pc]} {pc}", key=f"sel_{current_face}_{i}_{pc}", use_container_width=True):
-                                current_face_colors[i] = pc
-                                st.session_state.cube_state[current_face] = current_face_colors
-                                st.session_state.last_solution = None
-                                st.rerun()
+                    st.selectbox(
+                        "Color",
+                        options=AVAILABLE_COLORS,
+                        index=AVAILABLE_COLORS.index(cur_c) if cur_c in AVAILABLE_COLORS else 0,
+                        format_func=lambda x: f"{COLOR_EMOJIS[x]} {x}",
+                        key=f"sel_{current_face}_{i}",
+                        label_visibility="collapsed",
+                        on_change=update_tile_color,
+                        args=(current_face, i)
+                    )
 
         st.divider()
 
