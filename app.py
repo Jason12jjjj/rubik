@@ -263,12 +263,8 @@ def extract_colors_from_image(image_bytes, expected_center):
     if region is None:
         if st.session_state.get('auto_detect', True):
             # If Auto-Detect was requested but algorithms couldn't find a crisp outline
-            # (e.g. background interference or blurry), fallback to a realistic 60% centered box.
-            # (90% is too large for normal webcam use and causes the sample points to miss)
-            grid_size  = int(min(h_img, w_img) * 0.60)
-            start_x    = (w_img - grid_size) // 2
-            start_y    = (h_img - grid_size) // 2
-            detection_method = "auto"
+            # (e.g. background interference or blurry), fail so the user knows to rescan
+            return None, None, "not_detected"
         else:
             grid_scale = st.session_state.get('cube_size', 50)
             grid_size  = int(min(h_img, w_img) * (grid_scale / 100.0))
@@ -530,6 +526,12 @@ if app_mode == "📸 Scan & Solve":
                     active_buffer.seek(0)
                 detected, debug_img, method = extract_colors_from_image(active_buffer, CENTER_COLORS[current_face])
                 
+                if detected is None:
+                    st.error("❌ **Could not detect the Rubik's cube.** Please ensure it is centered and clearly visible.")
+                    if current_face in st.session_state.processed_photos:
+                        del st.session_state.processed_photos[current_face]
+                    st.stop()
+
                 # Center Face Validation (Anti-Mistake Shield)
                 if detected[4] != CENTER_COLORS[current_face]:
                     st.error(f"❌ **Wrong Face Scanned!** Your camera detected a **{detected[4]}** center, but this is the **{current_face} ({CENTER_COLORS[current_face]})** slot.")
