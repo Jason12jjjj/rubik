@@ -98,62 +98,89 @@ st.markdown("""
 
 # ── COMPUTER VISION FUNCTIONS ────────────────────────────────────────────────
 def auto_detect_cube_region(img):
+    """
+    Search for a 3x3 grid of stickers instead of one large square.
+    More robust against reflections and edge noise.
+    """
     h_img, w_img = img.shape[:2]
-    # Restrict to realistic sizes
-    min_area = (min(h_img, w_img) * 0.25) ** 2
-    max_area = (min(h_img, w_img) * 0.95) ** 2
+    
+    # 1. Preprocessing for sticker detection
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # Bilateral filter preserves edges but kills noise/glare
+    blurred = cv2.bilateralFilter(gray, 9, 75, 75)
+    # Adaptive threshold is great for varying light
+    thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
+    
+    # 2. Find small square-ish contours (candidates for stickers)
+    cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    sticker_candidates = []
+    min_stk_area = (min(h_img, w_img) * 0.05) ** 2
+    max_stk_area = (min(h_img, w_img) * 0.25) ** 2
 
-    def score_contours(cnts):
-        best = None
+    for cnt in cnts:
+        area = cv2.contourArea(cnt)
+        if area < min_stk_area or area > max_stk_area:
+            continue
+        
+        peri = cv2.arcLength(cnt, True)
+        approx = cv2.approxPolyDP(cnt, 0.04 * peri, True)
+        x, y, w, bh = cv2.boundingRect(cnt)
+        aspect = min(w, bh) / max(w, bh)
+        
+        # Sticker must be roughly square
+        if aspect < 0.75: continue
+        
+        # Center of the candidate
+        cx, cy = x + w/2, y + bh/2
+        sticker_candidates.append({'center': (cx, cy), 'area': area, 'w': w, 'h': bh})
+
+    if len(sticker_candidates) < 3:
+        # Fallback to the old "One Big Square" logic if we can't find stickers
+        edges = cv2.Canny(blurred, 30, 100)
+        cnts_big, _ = cv2.findContours(cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((5,5))), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        best_big = None
         best_score = 0
-        for cnt in cnts:
+        for cnt in cnts_big:
             area = cv2.contourArea(cnt)
-            if area < min_area or area > max_area:
-                continue
-
-            peri = cv2.arcLength(cnt, True)
-            approx = cv2.approxPolyDP(cnt, 0.04 * peri, True)
+            if area < (min(h_img, w_img)*0.3)**2: continue
             x, y, w, bh = cv2.boundingRect(cnt)
-
-            # A cube face must be roughly a perfect square.
-            aspect = min(w, bh) / max(w, bh)
-            if aspect < 0.70: # Slightly relaxed for some perspectives
-                continue
-
-            # Prefer things closer to the center, but allow searching anywhere
-            cx = x + w / 2.0
-            cy = y + bh / 2.0
-            dist_to_center = ((cx - w_img / 2.0) ** 2 + (cy - h_img / 2.0) ** 2) ** 0.5
-            max_dist = ((w_img / 2.0) ** 2 + (h_img / 2.0) ** 2) ** 0.5
-            center_weight = max(0.2, 1.0 - (dist_to_center / max_dist))
-            
-            # Shape bonus: 4 sides is better
-            shape_bonus = 3.0 if len(approx) == 4 else (1.0 if len(approx) in [5, 6] else 0.5)
-
-            score = area * aspect * shape_bonus * center_weight
-
+            score = area * (min(w, bh)/max(w, bh))
             if score > best_score:
                 best_score = score
-                side = int(min(w, bh) * 0.94)
-                bx = int(cx - side / 2.0)
-                by = int(cy - side / 2.0)
-                bx = max(0, min(bx, w_img - side))
-                by = max(0, min(by, h_img - side))
-                best = (bx, by, side)
-        return best
+                best_big = (x, y, int(min(w, bh)))
+        return best_big
 
-    # Pass 1: Canny (Grid lines)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(cv2.GaussianBlur(gray, (5, 5), 0), 40, 120)
-    cnts_edge, _ = cv2.findContours(cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((5,5))), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    best = score_contours(cnts_edge)
-    if best: return best
-
-    # Pass 2: Saturation (for colorful backgrounds)
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(hsv, (0, 45, 45), (180, 255, 255))
-    cnts, _ = cv2.findContours(cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7,7))), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    return score_contours(cnts)
+    # 3. Simple clustering: Group candidates by proximity to find a 3x3 pattern
+    # We find the sticker closest to the center of the image and its neighbors
+    sticker_candidates.sort(key=lambda s: ((s['center'][0]-w_img/2)**2 + (s['center'][1]-h_img/2)**2))
+    
+    # Take the top candidates and assume they form the grid
+    top_candidates = sticker_candidates[:min(len(sticker_candidates), 12)]
+    
+    # Find bounding box of these candidates
+    all_x = [s['center'][0] for s in top_candidates]
+    all_y = [s['center'][1] for s in top_candidates]
+    min_x, max_x = min(all_x), max(all_x)
+    min_y, max_y = min(all_y), max(all_y)
+    
+    # Calculate grid properties
+    grid_w = max_x - min_x
+    grid_h = max_y - min_y
+    
+    # Expand slightly to cover the full face
+    margin = int(max(grid_w, grid_h) * 0.2)
+    gs = int(max(grid_w, grid_h) + margin)
+    sx = int(min_x - margin/2 - grid_w*0.1) # Offset to center the 3x3
+    sy = int(min_y - margin/2 - grid_h*0.1)
+    
+    # Sanity checks
+    sx, sy = max(0, sx), max(0, sy)
+    gs = min(gs, min(h_img-sy, w_img-sx))
+    
+    if gs < min(h_img, w_img) * 0.2: return None
+    
+    return (sx, sy, gs)
 
 def classify_color(bgr_pixel, std_colors):
     pixel_lab = cv2.cvtColor(np.uint8([[[bgr_pixel[0], bgr_pixel[1], bgr_pixel[2]]]]), cv2.COLOR_BGR2LAB)[0][0]
@@ -185,25 +212,46 @@ def extract_colors_from_image(image_bytes, expected_center):
         sx, sy, meth = (w_i-gs)//2, (h_i-gs)//2, "manual"
     
     cs = gs // 3
-    # Local calc
-    c_roi = img[int(sy+1.5*cs-5):int(sy+1.5*cs+5), int(sx+1.5*cs-5):int(sx+1.5*cs+5)]
-    if c_roi.size > 0:
-        b, g, r = np.median(c_roi, axis=(0,1)).astype(np.uint8)
+    # Step 1: DYNAMIC LOCAL CALIBRATION (Central Anchor)
+    # We sample a larger block of the central sticker and anchor the 'standard' color to it.
+    cx_c, cy_c = int(sx + 1.5*cs), int(sy + 1.5*cs)
+    # Block sample: 10x10 block median
+    roi_c = img[max(0, cy_c-7):min(h_i, cy_c+7), max(0, cx_c-7):min(w_i, cx_c+7)]
+    if roi_c.size > 0:
+        # Use median to ignore specularity/reflections
+        b, g, r = np.median(roi_c, axis=(0,1)).astype(np.uint8)
         if classify_color((b,g,r), std) == expected_center:
-            hsv = cv2.cvtColor(np.uint8([[[b,g,r]]]), cv2.COLOR_BGR2HSV)[0][0]
+            hsv = cv2.cvtColor(np.uint8([[[b,g,r]]]), cv2.COLOR_HSV2BGR)
+            hsv = cv2.cvtColor(hsv, cv2.COLOR_BGR2HSV)[0][0]
             std[expected_center] = (int(hsv[0]), int(hsv[1]), int(hsv[2]))
 
     detected, debug = [], img.copy()
     col_rect = (0, 255, 0) if meth=="auto" else (255, 255, 255)
     cv2.rectangle(debug, (sx, sy), (sx+gs, sy+gs), col_rect, 3)
-    for r in range(3):
-        for c in range(3):
-            cx, cy = int(sx+(c+0.5)*cs), int(sy+(r+0.5)*cs)
-            roi = img[max(0,cy-5):min(h_i,cy+5), max(0,cx-5):min(w_i,cx+5)]
-            clr = classify_color(np.median(roi, axis=(0,1)), std) if roi.size>0 else 'White'
+    
+    for row in range(3):
+        for col in range(3):
+            # Center of the sticker
+            cx, cy = int(sx + (col+0.5)*cs), int(sy + (row+0.5)*cs)
+            
+            # Step 2: Block Sampling (10x10 area)
+            # This is much more stable than a single pixel
+            y1, y2 = max(0, cy-7), min(h_i, cy+7)
+            x1, x2 = max(0, cx-7), min(w_i, cx+7)
+            roi = img[y1:y2, x1:x2]
+            
+            if roi.size > 0:
+                # Use median to filter out noise/dust
+                avg_bgr = np.median(roi, axis=(0,1)).astype(np.uint8)
+                clr = classify_color(avg_bgr, std)
+            else:
+                clr = 'White'
+                
             detected.append(clr)
-            cv2.circle(debug, (cx, cy), 6, (0,255,0), -1)
-            cv2.putText(debug, clr, (cx-15, cy+20), 0, 0.4, (255,255,255), 1)
+            cv2.circle(debug, (cx, cy), 8, (0, 255, 0), -1)
+            cv2.putText(debug, clr, (cx-20, cy+25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 3)
+            cv2.putText(debug, clr, (cx-20, cy+25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+            
     return detected, cv2.cvtColor(debug, cv2.COLOR_BGR2RGB), meth
 
 # ── UI COMPONENTS ────────────────────────────────────────────────────────────
