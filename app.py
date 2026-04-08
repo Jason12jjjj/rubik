@@ -107,8 +107,11 @@ if not st.session_state.get('auto_detect', True):
 # ─────────────────────────────────────────────────────────────────────────────
 def auto_detect_cube_region(img):
     h_img, w_img = img.shape[:2]
-    min_area = (min(h_img, w_img) * 0.25) ** 2
+     min_area = (min(h_img, w_img) * 0.20) ** 2
     max_area = (min(h_img, w_img) * 0.95) ** 2
+
+    k_size = max(5, int(min(w_img, h_img) * 0.015))
+    k_size = k_size if k_size % 2 != 0 else k_size + 1
 
     def score_contours(cnts):
         best = None
@@ -123,7 +126,7 @@ def auto_detect_cube_region(img):
             x, y, w, bh = cv2.boundingRect(cnt)
 
             aspect = min(w, bh) / max(w, bh)
-            if aspect < 0.82:
+           if aspect < 0.70:
                 continue
 
             cx = x + w / 2.0
@@ -132,7 +135,7 @@ def auto_detect_cube_region(img):
             max_dist = ((w_img / 2.0) ** 2 + (h_img / 2.0) ** 2) ** 0.5
             center_weight = max(0.1, 1.0 - (dist_to_center / max_dist))
             
-            if dist_to_center > min(w_img, h_img) * 0.35:
+            if dist_to_center > min(w_img, h_img) * 0.45:
                 continue
 
             shape_bonus = 3.0 if len(approx) == 4 else (1.5 if len(approx) in [5, 6] else 0.5)
@@ -152,9 +155,9 @@ def auto_detect_cube_region(img):
         return best
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(blurred, 40, 120)
-    kernel_edge = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+   blurred = cv2.GaussianBlur(gray, (k_size, k_size), 0)
+    edges = cv2.Canny(blurred, 30, 100)
+   kernel_edge = cv2.getStructuringElement(cv2.MORPH_RECT, (k_size, k_size))
     closed_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel_edge, iterations=2)
     cnts_edge, _ = cv2.findContours(closed_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
@@ -162,11 +165,10 @@ def auto_detect_cube_region(img):
     if best_region is not None:
         return best_region
 
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    mask_sat = cv2.inRange(hsv, (0, 45, 45), (180, 255, 255))
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
-    clean = cv2.morphologyEx(mask_sat, cv2.MORPH_CLOSE, kernel, iterations=3)
-    clean = cv2.morphologyEx(clean, cv2.MORPH_OPEN, kernel, iterations=2)
+  hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    mask_sat = cv2.inRange(hsv, (0, 40, 40), (180, 255, 255))
+    clean = cv2.morphologyEx(mask_sat, cv2.MORPH_CLOSE, kernel_edge, iterations=3)
+    clean = cv2.morphologyEx(clean, cv2.MORPH_OPEN, kernel_edge, iterations=2)
     cnts, _ = cv2.findContours(clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     return score_contours(cnts)
