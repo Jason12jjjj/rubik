@@ -245,7 +245,7 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
                             queue.append(v)
             all_clusters.append([candidates[idx] for idx in curr_cluster])
         
-        max_score = 0.0
+        max_score = 0.1 # Very low baseline to encourage locking
         for cluster in all_clusters:
             if len(cluster) < 4: continue
             
@@ -256,7 +256,10 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
             c_w, c_h = c_max_x - c_min_x, c_max_y - c_min_y
             curr_coverage = (c_w * c_h) / (work_w * work_h)
             
-            if curr_coverage < 0.01: continue
+            # 🧬 Robust Metric: Area Consistency (Are they similar in size?)
+            c_areas = [c['area'] for c in cluster]
+            area_std = np.std(c_areas) / (np.mean(c_areas) + 1e-6)
+            consistency_score = 1.0 / (1.0 + area_std)
 
             # Regularity & Bucketing Score
             reg_score = 1.0
@@ -269,7 +272,7 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
             if all_dists:
                 reg_score = 1.0 / (1.0 + np.std(all_dists) / (np.mean(all_dists) + 1e-6))
 
-            # 🧩 HYBRID ROW/COLUMN BUCKETING (User Suggestion)
+            # Bonus for 3x3 layout
             grid_bonus = 1.0
             if len(cluster) >= 7:
                 pts_sort_y = sorted(cluster, key=lambda x: x['center'][1])
@@ -277,33 +280,36 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
                 if pts_sort_y:
                     curr_row = [pts_sort_y[0]]
                     for k in range(1, len(pts_sort_y)):
-                        if pts_sort_y[k]['center'][1] - curr_row[-1]['center'][1] < med_w * 1.2:
+                        if pts_sort_y[k]['center'][1] - curr_row[-1]['center'][1] < med_w * 1.3:
                             curr_row.append(pts_sort_y[k])
                         else:
                             rows.append(curr_row); curr_row = [pts_sort_y[k]]
                     rows.append(curr_row)
-                if len(rows) == 3 and all(len(r) >= 2 for r in rows):
-                    grid_bonus = 2.0 # Huge bonus for stable row structure
+                if len(rows) == 3: grid_bonus = 2.0
 
-            score = (len(cluster)**2) * reg_score * grid_bonus * (1.0 + curr_coverage * 10)
-            if 7 <= len(cluster) <= 10: score *= 5.0
-            if len(cluster) == 9: score += 100
+            # Aggressive Score: Prioritize Consistency and Count
+            score = (len(cluster)**2) * consistency_score * reg_score * grid_bonus * (1.0 + curr_coverage * 5)
             
             if score > max_score:
                 max_score, best_cluster = score, cluster
                 best_reg_score, cluster_coverage = reg_score, curr_coverage
 
-        status_msg = f"Locked cluster: {len(best_cluster)} stks (Cov={cluster_coverage*100:.1f}%, Score={max_score:.1f})"
+        status_msg = f"Locked cluster: {len(best_cluster)} stks (RegScore={best_reg_score:.2f}, FinalScore={max_score:.1f})"
         trace.append(status_msg)
 
-    # Final Diagnostic Color Marking
+    # --- ADVANCED DIAGNOSTIC DRAWING ---
     if show_diag:
-        for r in all_raw:
-            color = (0,0,255) # Red for raw
-            if any(np.sqrt((r['center'][0]-c['center'][0])**2 + (r['center'][1]-c['center'][1])**2) < 5 for c in best_cluster):
-                color = (0,255,0) # Green for prize
-            cv2.rectangle(work_img, (r['box'][0], r['box'][1]), (r['box'][0]+r['box'][2], r['box'][1]+r['box'][3]), color, 1)
-        diag_imgs['Candidates Map'] = cv2.cvtColor(work_img, cv2.COLOR_BGR2RGB)
+        # Draw ALL raw candidates in RED
+        for r in candidates:
+            c = r['cnt']
+            x, y, w, h = cv2.boundingRect(c)
+            cv2.rectangle(work_img, (x, y), (x + w, y + h), (0, 0, 255), 1)
+        
+        # Draw INCLUDED cluster in GREEN circles
+        for b in best_cluster:
+            cv2.circle(work_img, b['center'], 5, (0, 255, 0), -1)
+            
+        diag_imgs['Sticker Candidates'] = cv2.cvtColor(work_img, cv2.COLOR_BGR2RGB)
 
     # --- 4. TRANSFORMATION & OUTPUT ---
     if len(best_cluster) < 4:
