@@ -201,38 +201,51 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
     best_cluster = []
     pass_info = "Searching..."
 
-    if len(candidates) >= 4: # Lowered to 4 for cluster growth, 7 for final lock
-        max_score = 0
-        avg_w = np.mean([np.sqrt(c['area']) for c in candidates])
-        threshold_dist = avg_w * 3.5
-        min_dist = avg_w * 0.7 # 🔥 MIN DISTANCE to prevent collapse
+    if len(candidates) >= 4:
+        # Cluster logic: Growth / Connected Components
         pts = np.array([c['center'] for c in candidates])
+        avg_w = np.mean([np.sqrt(c['area']) for c in candidates])
+        threshold_dist = avg_w * 4.5 # Increased for perspective
+        min_dist = avg_w * 0.6
+        
+        visited = [False] * len(candidates)
+        all_clusters = []
         
         for i in range(len(candidates)):
-            cluster = [candidates[i]]
-            c_pts = []
-            for j in range(len(candidates)):
-                if i == j: continue
-                d = np.sqrt(np.sum((pts[i] - pts[j])**2))
-                # Must be close enough to be a neighbor but NOT the same sticker
-                if min_dist < d < threshold_dist: 
-                    cluster.append(candidates[j])
-                    c_pts.append(pts[j])
+            if visited[i]: continue
+            # Start a new BFS cluster
+            curr_cluster = [i]
+            queue = [i]
+            visited[i] = True
+            while queue:
+                u = queue.pop(0)
+                for v in range(len(candidates)):
+                    if not visited[v]:
+                        d = np.sqrt(np.sum((pts[u] - pts[v])**2))
+                        if min_dist < d < threshold_dist:
+                            visited[v] = True
+                            curr_cluster.append(v)
+                            queue.append(v)
+            all_clusters.append([candidates[idx] for idx in curr_cluster])
+        
+        # Pick best cluster based on size (target 9) and regularity
+        max_score = 0
+        for cluster in all_clusters:
+            if len(cluster) < 4: continue
             
-            # 📐 GEOMETRIC REGULARITY: Rubik grid is equally spaced
+            # 📐 Regularity score for this specific cluster
             reg_score = 1.0
-            if len(c_pts) >= 4:
-                # Calculate variance of distances to nearest 3 neighbors
+            if len(cluster) >= 4:
                 all_dists = []
                 for p_m in cluster:
                     px, py = p_m['center']
                     d_to_others = sorted([np.sqrt((px-o['center'][0])**2 + (py-o['center'][1])**2) for o in cluster if o is not p_m])
-                    all_dists.extend(d_to_others[:3])
+                    all_dists.extend(d_to_others[:2]) # Check 2 nearest
                 reg_score = 1.0 / (1.0 + np.std(all_dists) / (np.mean(all_dists) + 1e-6))
 
-            # Final Score calculation
             score = len(cluster) * np.mean([c['weight'] for c in cluster]) * reg_score
-            if 7 <= len(cluster) <= 10: score *= 3.0 # High confidence for human-held grid
+            if 7 <= len(cluster) <= 10: score *= 4.0
+            if len(cluster) == 9: score += 20
             
             if score > max_score:
                 max_score, best_cluster = score, cluster
