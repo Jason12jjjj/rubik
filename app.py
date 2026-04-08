@@ -481,6 +481,10 @@ if app_mode == "📸 Scan & Solve":
         </div>
         """
 
+if 'force_next_face' in st.session_state:
+        st.session_state.face_selector = st.session_state.force_next_face
+        del st.session_state.force_next_face
+        
     current_face = st.radio(
         "🧭 **Select which face you are scanning:**", FACES,
         format_func=lambda x: f"{COLOR_EMOJIS[CENTER_COLORS[x]]} {x} Face",
@@ -557,8 +561,8 @@ if app_mode == "📸 Scan & Solve":
                 st.session_state.scan_success_msg = f"🎉 **{current_face} Face** scanned successfully."
                 unscanned = [f for f in FACES if f not in st.session_state.processed_photos]
                 if unscanned:
-                    st.session_state.face_selector = unscanned[0]
-                    st.session_state.uploader_key_version += 1
+                st.session_state.force_next_face = unscanned[0]
+                st.session_state.uploader_key_version += 1
                     st.session_state.scan_success_msg += f" Auto-advanced to **{unscanned[0]} Face**."
                 else:
                     st.session_state.scan_success_msg += " All 6 faces are ready to solve!"
@@ -771,7 +775,7 @@ elif app_mode == "⚙️ Tune Colors":
         st.write("#### 📊 Captured Sample")
         c1, c2 = st.columns([1, 1])
         with c1:
-            st.image(debug_img_rgb, caption="Selected Position")
+            st.image(debug_img_rgb, caption="Selected Position",width=250)
         with c2:
             sample_hex = '#{:02x}{:02x}{:02x}'.format(int(avg_r), int(avg_g), int(avg_b))
             st.markdown(f'<div style="width:100px;height:100px;background-color:{sample_hex};border:2px solid white;border-radius:10px;margin-bottom:8px;"></div>', unsafe_allow_html=True)
