@@ -190,8 +190,13 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
                             found.append({'cnt':c, 'center':(cx,cy), 'area':area, 'weight': 1.0/(1.0+dist_c/work_w)})
         return found
 
+    # 🚀 ADAPTIVE SHUTTER LOOP with Morphological Dilation
+    kernel = np.ones((3,3), np.uint8)
     for ws in [13, 31, 61, 101, 151]:
         thr = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, ws, 2)
+        # Morphological Dilate to close gaps in sticker outlines
+        thr = cv2.dilate(thr, kernel, iterations=1)
+        
         c_found = process_contours(cv2.findContours(thr, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0])
         for cand in c_found:
             if not any(np.sqrt((cand['center'][0]-c['center'][0])**2 + (cand['center'][1]-c['center'][1])**2) < 15 for c in candidates):
@@ -200,40 +205,39 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
     
     trace.append(f"Trace: Final Candidates={len(candidates)}")
 
-    # --- 3. CLUSTERING PHASE: GREEDY GRID LOCKING ---
+    # --- 3. CLUSTERING PHASE: HARD-CORE FORCE LOCKING ---
     if len(candidates) >= 4:
-        # Step A: Filter by Area Consistency
+        # Step A: Filter by Area (Aggressive 0.5x - 3.0x Range)
         valid_areas = [c['area'] for c in candidates]
         med_area = np.median(valid_areas)
         med_w = np.sqrt(med_area)
-        filtered_cands = [c for c in candidates if 0.4 * med_area < c['area'] < 2.5 * med_area]
+        filtered_cands = [c for c in candidates if 0.5 * med_area < c['area'] < 3.0 * med_area]
         
-        # Step B: Select Anchor (Closest to center)
+        # Step B: Center Anchor Harvesting (Direct center prioritization)
         filtered_cands.sort(key=lambda x: x['weight'], reverse=True)
         
-        if filtered_cands:
-            anchor = filtered_cands[0]
-            # Step C: Harvest Nearest Neighbors
-            def get_dist(c):
-                return np.sqrt((c['center'][0] - anchor['center'][0])**2 + (c['center'][1] - anchor['center'][1])**2)
+        # Step C: Take Best 9 (Force a group)
+        # We value count and center proximity most
+        potential_grid = filtered_cands[:9]
+        
+        if len(potential_grid) >= 4:
+            c_pts = np.array([c['center'] for c in potential_grid])
+            c_min_x, c_min_y = np.min(c_pts, axis=0)
+            c_max_x, c_max_y = np.max(c_pts, axis=0)
+            cw, ch = c_max_x - c_min_x, c_max_y - c_min_y
+            aspect_ratio = min(cw, ch) / (max(cw, ch) + 1e-6)
             
-            filtered_cands.sort(key=get_dist)
-            potential_grid = filtered_cands[:9]
+            # Area Consistency (Are the chosen 9 similar?)
+            c_areas = [x['area'] for x in potential_grid]
+            consistency = 1.0 / (1.0 + np.std(c_areas) / (np.mean(c_areas) + 1e-6))
             
-            # Step D: Quality Check
-            if len(potential_grid) >= 4:
-                c_pts = np.array([c['center'] for c in potential_grid])
-                c_min_x, c_min_y = np.min(c_pts, axis=0)
-                c_max_x, c_max_y = np.max(c_pts, axis=0)
-                cw, ch = c_max_x - c_min_x, c_max_y - c_min_y
-                aspect_ratio = min(cw, ch) / (max(cw, ch) + 1e-6)
-                consistency = 1.0 / (1.0 + np.std([x['area'] for x in potential_grid]) / (np.mean([x['area'] for x in potential_grid]) + 1e-6))
-                
-                if aspect_ratio > 0.6 and consistency > 0.5:
-                    best_cluster = potential_grid
-                    max_score = len(best_cluster) * consistency * aspect_ratio
+            # Aggressive Force Lock: If AR > 0.5 we trigger transformation
+            if aspect_ratio > 0.5:
+                best_cluster = potential_grid
+                max_score = len(best_cluster) * 10.0 # Force lock score
+                cluster_coverage = (cw * ch) / (work_w * work_h)
 
-    trace.append(f"Locked cluster: {len(best_cluster)} stks (Score={max_score:.1f})")
+    trace.append(f"Locked cluster: {len(best_cluster)} stks (ForceScore={max_score:.1f})")
 
     # --- DIAGNOSTICS ---
     if show_diag:
