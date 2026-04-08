@@ -97,10 +97,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── ADVANCED COMPUTER VISION (WARP PERSPECTIVE VERSION) ──────────────────────
-def auto_detect_cube_face(image_bytes, expected_center):
+def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
     file_bytes = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, 1)
     if img is None: return None, None, False
+    
+    diag_imgs = {}
     
     # 1. Padding: Add black border so edge-touching stickers are detected correctly
     pad = 40
@@ -117,9 +119,11 @@ def auto_detect_cube_face(image_bytes, expected_center):
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     
     best_cnt = None
+    pass_info = "Waiting..."
     
     # Pass 1: Adaptive Threshold (Finding stickers)
     thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
+    if show_diag: diag_imgs['Pass 1 (Stickers)'] = thresh
     cnts_s, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     stks = []
@@ -139,8 +143,11 @@ def auto_detect_cube_face(image_bytes, expected_center):
         
         # Area Qualification Check
         box_area = w * h
+        area_pct = (box_area / total_area) * 100
+        pass_info = f"Pass 1: Found {len(stks)} stickers. Area={area_pct:.1f}%"
+        
         if (total_area * 0.10 < box_area < total_area * 0.60):
-            # Pass 1 Success: Manual calculation of box points
+            # Pass 1 Success
             theta = angle * np.pi / 180.0
             cos_t, sin_t = np.cos(theta), np.sin(theta)
             rect_pts = np.array([[-w/2, -h/2], [w/2, -h/2], [w/2, h/2], [-w/2, h/2]])
@@ -156,6 +163,7 @@ def auto_detect_cube_face(image_bytes, expected_center):
     if best_cnt is None:
         edges = cv2.Canny(blurred, 20, 100)
         edges = cv2.dilate(edges, np.ones((3,3)))
+        if show_diag: diag_imgs['Pass 2 (Edges)'] = edges
         cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         max_area = 0
@@ -166,6 +174,7 @@ def auto_detect_cube_face(image_bytes, expected_center):
                 continue
                 
             area = cv2.contourArea(cnt)
+            area_pct = (area / total_area) * 100
             # Area Constraint: 5% ~ 45% (more realistic for scan view)
             if (total_area * 0.05) < area < (total_area * 0.45):
                 hull = cv2.convexHull(cnt)
@@ -173,16 +182,16 @@ def auto_detect_cube_face(image_bytes, expected_center):
                 appr = cv2.approxPolyDP(hull, 0.05 * peri, True)
                 
                 # Check for 4 vertices and aspect ratio
-                if len(appr) == 4 and area > max_area:
+                if len(appr) == 4:
                     _, (bw, bh), _ = cv2.minAreaRect(appr)
-                    if bw > 0 and bh > 0:
-                        aspect_ratio = min(bw, bh) / max(bw, bh)
-                        # Aspect Ratio Constraint: min 0.7 (square-like)
-                        if aspect_ratio > 0.7:  
-                            max_area = area
-                            best_cnt = appr.reshape(4, 2)
+                    ratio = min(bw, bh) / max(bw, bh) if max(bw, bh) > 0 else 0
+                    pass_info = f"Pass 2: Area={area_pct:.1f}%, Ratio={ratio:.2f}"
+                    
+                    if area > max_area and ratio > 0.7:  
+                        max_area = area
+                        best_cnt = appr.reshape(4, 2)
 
-    if best_cnt is None: return None, None, False
+    if best_cnt is None: return None, pass_info, False
 
     # --- Perspective Warping ---
     # Convert points from 'work' size back to 'padded' size
@@ -321,6 +330,7 @@ with st.sidebar:
         st.markdown(render_interactive_map(st.session_state.programmatic_face), unsafe_allow_html=True)
         st.divider()
         with st.expander("🛠️ Advanced Tools"):
+            st.session_state.show_diag = st.toggle("🔍 Diagnostic Vision", value=st.session_state.get('show_diag', False), help="Show intermediate CV steps to help debug detection issues.")
             st.session_state.cube_size = st.slider("Manual Grid Size (%)", 10, 100, st.session_state.cube_size, help="Adjust the fixed overlay size in Manual Mode.")
             if st.button("🗑️ Reset All Scans", use_container_width=True):
                 st.session_state.processed_photos = {}
@@ -370,7 +380,10 @@ if app_mode == "📸 Scan & Solve":
                 
                 # BRANCH: Auto-Detect vs Manual Alignment
                 if st.session_state.auto_detect:
-                    d, db, success = auto_detect_cube_face(act, CENTER_COLORS[curr])
+                    d, db, res = auto_detect_cube_face(act, CENTER_COLORS[curr], show_diag=st.session_state.get('show_diag'))
+                    success = (res is not False)
+                    if st.session_state.get('show_diag'): st.write(f"🔬 Diag: {res}")
+                    
                     msg_success = "✨ **I flattened the cube face!** Check the orientation and colors."
                     msg_fail = "❌ Cube outline not found. Try to hold it flatter, or switch to Manual Mode (uncheck Auto-Detect) to use the fixed grid."
                 else:
