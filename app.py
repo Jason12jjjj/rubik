@@ -155,9 +155,9 @@ def auto_detect_cube_region(img):
         return best
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-   blurred = cv2.GaussianBlur(gray, (k_size, k_size), 0)
+    blurred = cv2.GaussianBlur(gray, (k_size, k_size), 0)
     edges = cv2.Canny(blurred, 30, 100)
-   kernel_edge = cv2.getStructuringElement(cv2.MORPH_RECT, (k_size, k_size))
+    kernel_edge = cv2.getStructuringElement(cv2.MORPH_RECT, (k_size, k_size))
     closed_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel_edge, iterations=2)
     cnts_edge, _ = cv2.findContours(closed_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
@@ -165,7 +165,7 @@ def auto_detect_cube_region(img):
     if best_region is not None:
         return best_region
 
-  hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     mask_sat = cv2.inRange(hsv, (0, 40, 40), (180, 255, 255))
     clean = cv2.morphologyEx(mask_sat, cv2.MORPH_CLOSE, kernel_edge, iterations=3)
     clean = cv2.morphologyEx(clean, cv2.MORPH_OPEN, kernel_edge, iterations=2)
