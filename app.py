@@ -102,12 +102,12 @@ def auto_detect_cube_face(image_bytes, expected_center):
     img = cv2.imdecode(file_bytes, 1)
     if img is None: return None, None, False
     
-    # 1. Padding Trick: Add a black border to allow contours to be closed at the edge
-    pad = 30
+    # 1. Padding: Add black border so edge-touching stickers are detected correctly
+    pad = 40
     img_padded = cv2.copyMakeBorder(img, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=[0, 0, 0])
     h_p, w_p = img_padded.shape[:2]
     
-    # Resize for processing
+    # Resize for processing speed
     work_h = 650
     work_w = int(w_p * (work_h / h_p))
     work_img = cv2.resize(img_padded, (work_w, work_h))
@@ -116,63 +116,58 @@ def auto_detect_cube_face(image_bytes, expected_center):
     gray = cv2.cvtColor(work_img, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     
-    # Try multiple detection passes
     best_cnt = None
     
-    # Pass 1: Canny + Contour (Finding the big square)
-    edges = cv2.Canny(blurred, 20, 100)
-    edges = cv2.dilate(edges, np.ones((3,3), np.uint8), iterations=1)
-    cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Pass 1: Adaptive Threshold (Finding stickers)
+    thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
+    cnts_s, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    max_area = 0
-    for cnt in cnts:
-        area = cv2.contourArea(cnt)
-        if area > (work_h * 0.20) ** 2:
-            peri = cv2.arcLength(cnt, True)
-            approx = cv2.approxPolyDP(cnt, 0.04 * peri, True)
-            if len(approx) == 4 and area > max_area:
-                max_area = area
-                best_cnt = approx
+    stks = []
+    # Relaxed constraints for tilting/compression
+    for c in cnts_s:
+        a = cv2.contourArea(c)
+        if (work_h*0.02)**2 < a < (work_h*0.4)**2:
+            x,y,w,h = cv2.boundingRect(c)
+            if 0.25 < w/max(1,h) < 4.0: 
+                stks.append(c)
 
-    # Pass 2: Fallback to Sticker Clustering if Big Square fails
-    if best_cnt is None:
-        thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
-        cnts_s, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        stks = []
-        for c in cnts_s:
-            a = cv2.contourArea(c)
-            if (work_h*0.04)**2 < a < (work_h*0.25)**2:
-                peri = cv2.arcLength(c, True)
-                appr = cv2.approxPolyDP(c, 0.04*peri, True)
-                if len(appr) == 4:
-                    x,y,w,h = cv2.boundingRect(c)
-                    if 0.7 < w/h < 1.3: stks.append(c)
-        if len(stks) >= 4:
-            # Find the convex hull of all candidate stickers to form a face
-            combined = np.vstack(stks)
-            hull = cv2.convexHull(combined)
-            peri = cv2.arcLength(hull, True)
-            best_cnt = cv2.approxPolyDP(hull, 0.04 * peri, True)
-            if len(best_cnt) != 4:
-                # Force a bounding rect if hull is complex
-                xr, yr, wr, hr = cv2.boundingRect(hull)
-                best_cnt = np.array([[[xr,yr]], [[xr+wr,yr]], [[xr+wr,yr+hr]], [[xr,yr+hr]]])
+    if len(stks) >= 4:
+        # Use Rotated Bounding Box (minAreaRect) - MUCH better for tilted cubes
+        combined = np.vstack(stks)
+        rot_rect = cv2.minAreaRect(combined)
+        box = cv2.boxPoints(rot_rect)
+        best_cnt = np.int0(box)
+    else:
+        # Pass 2: Fallback to Canny + Dilation for low-contrast outlines
+        edges = cv2.Canny(blurred, 20, 100)
+        edges = cv2.dilate(edges, np.ones((3,3)))
+        cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        max_area = 0
+        for cnt in cnts:
+            area = cv2.contourArea(cnt)
+            if area > (work_h*0.2)**2:
+                peri = cv2.arcLength(cnt, True)
+                appr = cv2.approxPolyDP(cnt, 0.04 * peri, True)
+                if len(appr) == 4 and area > max_area:
+                    max_area = area
+                    best_cnt = appr.reshape(4, 2)
 
     if best_cnt is None: return None, None, False
 
     # --- Perspective Warping ---
-    # Rescale points to padded image size then adjust for padding
-    pts = (best_cnt.reshape(4, 2) * (h_p / work_h)).astype("float32")
+    # Convert points from 'work' size back to 'padded' size
+    pts_padded = (best_cnt.reshape(4, 2) * (h_p / work_h)).astype("float32")
     
-    # Sort points
+    # Sort points for WarpPerspective (TL, TR, BR, BL)
     rect = np.zeros((4, 2), dtype="float32")
-    s = pts.sum(axis=1)
-    rect[0], rect[2] = pts[np.argmin(s)], pts[np.argmax(s)]
-    diff = np.diff(pts, axis=1)
-    rect[1], rect[3] = pts[np.argmin(diff)], pts[np.argmax(diff)]
+    s = pts_padded.sum(axis=1)
+    rect[0], rect[2] = pts_padded[np.argmin(s)], pts_padded[np.argmax(s)]
+    diff = np.diff(pts_padded, axis=1)
+    rect[1], rect[3] = pts_padded[np.argmin(diff)], pts_padded[np.argmax(diff)]
 
     dst = np.array([[0,0], [299,0], [299,299], [0,299]], dtype="float32")
     M = cv2.getPerspectiveTransform(rect, dst)
+    # Perform warp on the PADDED image
     warped = cv2.warpPerspective(img_padded, M, (300, 300))
     debug_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB)
 
@@ -191,14 +186,52 @@ def auto_detect_cube_face(image_bytes, expected_center):
             min_dist, best_c = float('inf'), 'White'
             for c_name, (hs, ss, vs) in std_colors.items():
                 std_lab = cv2.cvtColor(cv2.cvtColor(np.uint8([[[hs, ss, vs]]]), cv2.COLOR_HSV2BGR), cv2.COLOR_BGR2LAB)[0][0]
-                # Lab distance with weight tuning (L: lightness, a: green-red, b: blue-yellow)
+                # Lab distance (weighted for perceptibility)
                 d = np.sqrt(0.5*(int(pixel_lab[0])-int(std_lab[0]))**2 + 1.25*(int(pixel_lab[1])-int(std_lab[1]))**2 + (int(pixel_lab[2])-int(std_lab[2]))**2)
                 if d < min_dist: min_dist, best_c = d, c_name
             
             detected[r*3+c] = best_c
             cv2.circle(debug_warped, (cx, cy), 15, (255, 255, 255), 2)
-            cv2.putText(debug_warped, best_c, (cx-30, cy+35), 0, 0.5, (0,0,0), 3)
-            cv2.putText(debug_warped, best_c, (cx-30, cy+35), 0, 0.5, (255,255,255), 1)
+            cv2.putText(debug_warped, best_c, (cx-30, cy+40), 0, 0.45, (0,0,0), 3)
+            cv2.putText(debug_warped, best_c, (cx-30, cy+40), 0, 0.45, (255,255,255), 1)
+
+    detected[4] = expected_center
+    return detected, debug_warped, True
+
+def run_manual_grid_extract(image_bytes, expected_center, scale_percent):
+    file_bytes = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
+    img = cv2.imdecode(file_bytes, 1)
+    if img is None: return None, None, False
+    
+    h, w = img.shape[:2]
+    # Use the scale requested by user or 50% default
+    gs = int(min(h, w) * (scale_percent / 100.0))
+    sx, sy = (w - gs) // 2, (h - gs) // 2
+    
+    # Crop and resize to 300x300 to unify UI with Auto-detect
+    cropped = img[sy:sy+gs, sx:sx+gs]
+    warped = cv2.resize(cropped, (300, 300))
+    debug_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB)
+    
+    std_colors = get_calibrated_colors()
+    detected = ['White'] * 9
+    cell_sz = 100
+    for r in range(3):
+        for c in range(3):
+            cx, cy = int((c+0.5)*cell_sz), int((r+0.5)*cell_sz)
+            roi = warped[cy-10:cy+10, cx-10:cx+10]
+            if roi.size == 0: continue
+            b_a, g_a, r_a = np.median(roi, axis=(0,1)).astype(np.uint8)
+            lab = cv2.cvtColor(np.uint8([[[b_a,g_a,r_a]]]), cv2.COLOR_BGR2LAB)[0][0]
+            
+            min_d, best = float('inf'), 'White'
+            for name, (hs,ss,vs) in std_colors.items():
+                sl = cv2.cvtColor(cv2.cvtColor(np.uint8([[[hs,ss,vs]]]), cv2.COLOR_HSV2BGR), cv2.COLOR_BGR2LAB)[0][0]
+                d = np.sqrt(0.5*(int(lab[0])-int(sl[0]))**2 + 1.25*(int(lab[1])-int(sl[1]))**2 + (int(lab[2])-int(sl[2]))**2)
+                if d < min_d: min_d, best = d, name
+            detected[r*3+c] = best
+            cv2.circle(debug_warped, (cx, cy), 15, (255, 255, 255), 2)
+            cv2.putText(debug_warped, best, (cx-30, cy+35), 0, 0.5, (255,255,255), 1)
 
     detected[4] = expected_center
     return detected, debug_warped, True
@@ -257,6 +290,7 @@ with st.sidebar:
         st.markdown(render_interactive_map(st.session_state.programmatic_face), unsafe_allow_html=True)
         st.divider()
         with st.expander("🛠️ Advanced Tools"):
+            st.session_state.cube_size = st.slider("Manual Grid Size (%)", 10, 100, st.session_state.cube_size, help="Adjust the fixed overlay size in Manual Mode.")
             if st.button("🗑️ Reset All Scans", use_container_width=True):
                 st.session_state.processed_photos = {}
                 st.session_state.shared_face_images = {}
@@ -300,16 +334,23 @@ if app_mode == "📸 Scan & Solve":
         act = buf or (io.BytesIO(sh) if sh and imth == "📂 Upload" else None)
         if act:
             key = f"{curr}_{getattr(act, 'file_id', id(act))}"
-            
             if st.session_state.processed_photos.get(curr) != key:
                 if hasattr(act, 'seek'): act.seek(0)
-                # Use NEW Perspective Warp Vision
-                d, db, success = auto_detect_cube_face(act, CENTER_COLORS[curr])
                 
+                # BRANCH: Auto-Detect vs Manual Alignment
+                if st.session_state.auto_detect:
+                    d, db, success = auto_detect_cube_face(act, CENTER_COLORS[curr])
+                    msg_success = "✨ **I flattened the cube face!** Check the orientation and colors."
+                    msg_fail = "❌ Cube outline not found. Try to hold it flatter, or switch to Manual Mode (uncheck Auto-Detect) to use the fixed grid."
+                else:
+                    d, db, success = run_manual_grid_extract(act, CENTER_COLORS[curr], st.session_state.cube_size)
+                    msg_success = "📐 **Manual Alignment Used.** I captured the colors inside the center grid."
+                    msg_fail = "❌ Failed to read manual grid. Check your connection."
+
                 if success:
                     st.session_state.cube_state[curr] = d
-                    st.image(db, caption="🚀 Perspective Stabilized View", use_container_width=True)
-                    st.success("✨ **I flattened the cube face!** Check the orientation and colors.")
+                    st.image(db, caption="📸 Capture Preview", use_container_width=True)
+                    st.success(msg_success)
                     
                     col_b1, col_b2 = st.columns(2)
                     with col_b1:
@@ -324,10 +365,11 @@ if app_mode == "📸 Scan & Solve":
                         if st.button("🔄 Retake", use_container_width=True, key=f"ign_{key}"):
                             st.session_state.uploader_key_version += 1; st.rerun()
                 else:
-                    st.error("❌ Cube outline not found. Try to hold it flatter and centering it.")
-                    # Show the original image as fallback
+                    st.error(msg_fail)
                     if hasattr(act, 'seek'): act.seek(0)
                     st.image(act, use_container_width=True)
+                    if not st.session_state.auto_detect:
+                        st.info("💡 Adjust the 'Manual Grid Size' slider in the sidebar to match the cube in the photo.")
 
         # Show the permanent saved image if it exists
         elif curr in st.session_state.processed_photos and f"cached_img_{curr}" in st.session_state:
