@@ -178,95 +178,120 @@ if app_mode == "📸 Scan & Solve":
     curr = st.session_state.programmatic_face
     st.title("🧊 Pro Rubik's Solver")
 
-# Face Switching Header
-h1, h2, h3 = st.columns([1,3,1])
-with h1: 
-    if st.button("⬅️ Prev", use_container_width=True):
-        st.session_state.programmatic_face = FACES[(FACES.index(curr)-1)%6]; st.rerun()
-with h2:
-    face_emoji = COLOR_EMOJIS[CENTER_COLORS[curr]]
-    st.markdown(f"<h2 style='text-align:center; color:#00e5ff;'>{face_emoji} Editing: {curr} Face</h2>", unsafe_allow_html=True)
-with h3:
-    if st.button("Next ➡️", use_container_width=True):
-        st.session_state.programmatic_face = FACES[(FACES.index(curr)+1)%6]; st.rerun()
+    # Face Switching Header
+    h1, h2, h3 = st.columns([1,3,1])
+    with h1: 
+        if st.button("⬅️ Prev", use_container_width=True):
+            st.session_state.programmatic_face = FACES[(FACES.index(curr)-1)%6]; st.rerun()
+    with h2:
+        face_emoji = COLOR_EMOJIS[CENTER_COLORS[curr]]
+        st.markdown(f"<h2 style='text-align:center; color:#00e5ff;'>{face_emoji} Editing: {curr} Face</h2>", unsafe_allow_html=True)
+    with h3:
+        if st.button("Next ➡️", use_container_width=True):
+            st.session_state.programmatic_face = FACES[(FACES.index(curr)+1)%6]; st.rerun()
 
-# UNDO / REDO CONTROLS
-u1, u2, u3 = st.columns([1, 1, 4])
-with u1:
-    if st.button("⏪ Undo", disabled=st.session_state.history_index <= 0, use_container_width=True):
-        st.session_state.history_index -= 1
-        st.session_state.cube_state = json.loads(st.session_state.history[st.session_state.history_index])
-        st.rerun()
-with u2:
-    if st.button("Redo ⏩", disabled=st.session_state.history_index >= len(st.session_state.history)-1, use_container_width=True):
-        st.session_state.history_index += 1
-        st.session_state.cube_state = json.loads(st.session_state.history[st.session_state.history_index])
-        st.rerun()
-
-st.info(f"💡 Select a color from the Palette then click the squares to fill.")
-
-c_edit, c_sol = st.columns([1, 1])
-
-with c_edit:
-    st.markdown("#### 🎨 Color Palette")
-    pal_cols = st.columns(6)
-    for i, color_name in enumerate(HEX_COLORS.keys()):
-        is_selected = st.session_state.selected_color == color_name
-        btn_label = f"{COLOR_EMOJIS[color_name]} {'•' if is_selected else ''}"
-        if pal_cols[i].button(btn_label, key=f"pal_{color_name}", use_container_width=True):
-            st.session_state.selected_color = color_name
+    # UNDO / REDO CONTROLS
+    u1, u2, u3 = st.columns([1, 1, 4])
+    with u1:
+        if st.button("⏪ Undo", disabled=st.session_state.history_index <= 0, use_container_width=True):
+            st.session_state.history_index -= 1
+            st.session_state.cube_state = json.loads(st.session_state.history[st.session_state.history_index])
+            st.rerun()
+    with u2:
+        if st.button("Redo ⏩", disabled=st.session_state.history_index >= len(st.session_state.history)-1, use_container_width=True):
+            st.session_state.history_index += 1
+            st.session_state.cube_state = json.loads(st.session_state.history[st.session_state.history_index])
             st.rerun()
 
-    st.divider()
-    
-    def paint_color(face_name, index):
-        st.session_state.cube_state[face_name][index] = st.session_state.selected_color
-        st.session_state.last_solution = None
-        push_history()
+    st.info(f"💡 Select a color from the Palette then click the squares to fill. Center is fixed to **{CENTER_COLORS[curr]}**.")
 
-    for r in range(3):
-        rows = st.columns(3)
-        for c in range(3):
-            idx = r*3 + c
-            color_val = st.session_state.cube_state[curr][idx]
-            if idx == 4:
-                rows[c].button(f"{COLOR_EMOJIS[color_val]}\nCtr", disabled=True, use_container_width=True)
-            else:
-                rows[c].button(f"{COLOR_EMOJIS[color_val]}\n{color_val}", key=f"btn_{curr}_{idx}", on_click=paint_color, args=(curr, idx), use_container_width=True)
+    c_edit, c_sol = st.columns([1, 1])
 
-    st.divider()
-    st.markdown("#### 📂 Photo Assist")
-    up_img = st.file_uploader("Upload face photo", type=['jpg', 'png', 'jpeg'], key=f"up_{curr}", label_visibility="collapsed")
-    if up_img:
-        st.image(up_img, caption="Reference Photo", use_container_width=True)
-        if st.button(f"📸 Scan {curr} Face", use_container_width=True):
-            with st.spinner("Processing..."):
-                d, db, ok = run_manual_grid_extract(up_img, CENTER_COLORS[curr])
-                if ok:
-                    st.session_state.cube_state[curr] = d
-                    push_history() # Save to history so user can undo the scan
-                    st.success("✨ Colors sampled! You can now refine them manually.")
-                    st.rerun()
+    with c_edit:
+        st.markdown("#### 🎨 Color Palette")
+        pal_cols = st.columns(6)
+        for i, color_name in enumerate(HEX_COLORS.keys()):
+            is_selected = st.session_state.selected_color == color_name
+            btn_label = f"{COLOR_EMOJIS[color_name]} {'•' if is_selected else ''}"
+            if pal_cols[i].button(btn_label, key=f"pal_{color_name}", use_container_width=True):
+                st.session_state.selected_color = color_name
+                st.rerun()
+
+        st.divider()
+        
+        def paint_color(face_name, index):
+            st.session_state.cube_state[face_name][index] = st.session_state.selected_color
+            st.session_state.last_solution = None
+            push_history()
+
+        # Center color enforcement before rendering
+        if st.session_state.cube_state[curr][4] != CENTER_COLORS[curr]:
+            st.session_state.cube_state[curr][4] = CENTER_COLORS[curr]
+
+        for r in range(3):
+            rows = st.columns(3)
+            for c in range(3):
+                idx = r*3 + c
+                color_val = st.session_state.cube_state[curr][idx]
+                if idx == 4:
+                    rows[c].button(f"{COLOR_EMOJIS[CENTER_COLORS[curr]]}\nCtr", disabled=True, use_container_width=True)
                 else:
-                    st.error("❌ Failed to parse image.")
+                    rows[c].button(f"{COLOR_EMOJIS[color_val]}\n{color_val}", key=f"btn_{curr}_{idx}", on_click=paint_color, args=(curr, idx), use_container_width=True)
 
-with c_sol:
-    st.markdown("### 🚀 Generate Solution")
-    if st.button("CALCULATE RECOVERY PATH", type="primary", use_container_width=True):
-        with st.spinner("Analyzing cube state..."):
-            ok, msg = validate_cube_state(st.session_state.cube_state)
-            if ok:
-                st.session_state.last_solution = solve_cube(st.session_state.cube_state)
+        st.divider()
+        st.markdown("#### 📂 Photo Assist")
+        up_img = st.file_uploader("Upload face photo", type=['jpg', 'png', 'jpeg'], key=f"up_{curr}", label_visibility="collapsed")
+        if up_img:
+            st.image(up_img, caption="Reference Photo", use_container_width=True)
+            if st.button(f"📸 Scan {curr} Face", use_container_width=True):
+                with st.spinner("Processing..."):
+                    d, db, ok = run_manual_grid_extract(up_img, CENTER_COLORS[curr])
+                    if ok:
+                        st.session_state.cube_state[curr] = d
+                        push_history() # Save to history so user can undo the scan
+                        st.success("✨ Colors sampled! You can now refine them manually.")
+                        st.rerun()
+                    else:
+                        st.error("❌ Failed to parse image.")
+
+    with c_sol:
+        st.markdown("### 🚀 Generate Solution")
+        if st.button("CALCULATE RECOVERY PATH", type="primary", use_container_width=True):
+            with st.spinner("Analyzing cube state..."):
+                ok, msg = validate_cube_state(st.session_state.cube_state)
+                if ok:
+                    st.session_state.last_solution = solve_cube(st.session_state.cube_state)
+                else:
+                    st.error(f"❌ {msg}")
+        
+        if st.session_state.last_solution:
+            sol = st.session_state.last_solution
+            if sol == "!IMPOSSIBLE_STATE!":
+                st.error("⚠️ IMPOSSIBLE STATE: Please double-check the colors.")
             else:
-                st.error(f"❌ {msg}")
+                st.success(f"✅ Solution Found: {sol}")
+                render_3d_player(sol)
+
+elif app_mode == "⚙️ Tune Colors":
+    st.title("⚙️ Color Calibration")
+    st.info("💡 Upload a photo of a single face and click 'Auto-Calibrate' to sync sensors with your lighting.")
     
-    if st.session_state.last_solution:
-        sol = st.session_state.last_solution
-        if sol == "!IMPOSSIBLE_STATE!":
-            st.error("⚠️ IMPOSSIBLE STATE: Please double-check the colors.")
-        else:
-            st.success(f"✅ Solution Found: {sol}")
-            render_3d_player(sol)
+    c_cal = st.radio("Target Color:", list(HEX_COLORS.keys()), horizontal=True, format_func=lambda x: f"{COLOR_EMOJIS[x]} {x}")
+    cal_buf = st.file_uploader("Upload Calibration Photo", type=['jpg', 'png', 'jpeg'], key="cal_up")
+    
+    if cal_buf:
+        img_cal = cv2.imdecode(np.asarray(bytearray(cal_buf.read()), dtype=np.uint8), 1)
+        if img_cal is not None:
+            st.image(cv2.cvtColor(img_cal, cv2.COLOR_BGR2RGB), caption="Calibration Source", use_container_width=True)
+            if st.button(f"🎯 Auto-Calibrate {c_cal} from Image Center", type="primary", use_container_width=True):
+                h, w = img_cal.shape[:2]
+                roi = img_cal[h//2-15:h//2+15, w//2-15:w//2+15]
+                avg_bgr = np.median(roi, axis=(0,1)).astype(np.uint8)
+                hsv_val = cv2.cvtColor(np.uint8([[[avg_bgr[0],avg_bgr[1],avg_bgr[0]]]]), cv2.COLOR_BGR2HSV)[0][0]
+                st.session_state.custom_std_colors[c_cal] = [int(hsv_val[0]), int(hsv_val[1]), int(hsv_val[2])]
+                with open(CALIB_FILE, 'w') as f: json.dump(st.session_state.custom_std_colors, f)
+                st.success(f"✅ Calibrated {c_cal} to HSV: {hsv_val}")
+                st.rerun()
 
 # Footer info
 st.markdown("---")
