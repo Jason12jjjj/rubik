@@ -6,6 +6,11 @@ from rubiks_core import validate_cube_state, solve_cube
 # --- 1. SYSTEM CONFIG ---
 st.set_page_config(page_title="Manual Rubik's Solver", page_icon="🧊", layout="wide")
 
+# Navigation via Map Clicks (Query Params)
+if "face_click" in st.query_params:
+    st.session_state.programmatic_face = st.query_params["face_click"]
+    st.query_params.clear()
+
 # Constants
 FACES = ['Up', 'Left', 'Front', 'Right', 'Back', 'Down']
 HEX_COLORS = {'White':'#f8f9fa','Red':'#ff4b4b','Green':'#09ab3b','Yellow':'#ffeb3b','Orange':'#ffa500','Blue':'#1e88e5'}
@@ -71,10 +76,10 @@ def run_manual_grid_extract(image_bytes, expected_center):
     return detected, debug_view, True
 
 # --- 2. SESSION STATE ---
-if 'cube_state' not in st.session_state:
-    st.session_state.cube_state = {f: (['White']*4 + [CENTER_COLORS[f]] + ['White']*4) for f in FACES}
 if 'programmatic_face' not in st.session_state:
     st.session_state.programmatic_face = 'Front'
+if 'cube_state' not in st.session_state:
+    st.session_state.cube_state = {f: (['White']*4 + [CENTER_COLORS[f]] + ['White']*4) for f in FACES}
 if 'last_solution' not in st.session_state:
     st.session_state.last_solution = None
 if 'selected_color' not in st.session_state:
@@ -99,9 +104,8 @@ def push_history():
     st.session_state.history_index = len(st.session_state.history) - 1
 
 # --- 3. UI COMPONENTS ---
-# [Interactive Map and 3D Player code...]
 def render_interactive_map(active_face):
-    """Renders a 2D net of the cube for navigation and overview"""
+    """Renders a 2D clickable net of the cube"""
     grid = {'Up':(0,1), 'Left':(1,0), 'Front':(1,1), 'Right':(1,2), 'Back':(1,3), 'Down':(2,1)}
     html = '<div style="display:grid;grid-template-columns:repeat(4,50px);gap:6px;justify-content:center;padding:10px;background:#1e1e1e;border-radius:10px;border:1px solid #444;">'
     for r in range(3):
@@ -109,12 +113,15 @@ def render_interactive_map(active_face):
             f_k = next((f for f, p in grid.items() if p == (r, c)), None)
             if f_k:
                 style = "border:2px solid #00e5ff; box-shadow:0 0 8px #00e5ff;" if f_k == active_face else "border:1px solid #444;"
-                html += f'<div style="text-align:center; cursor:pointer; {style} border-radius:4px; padding:2px;">'
-                html += f'<div style="font-size:10px; color:#aaa;">{COLOR_EMOJIS[CENTER_COLORS[f_k]]} {f_k[0]}</div>'
-                html += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1px;">'
-                for clr in st.session_state.cube_state[f_k]:
-                    html += f'<div style="width:12px;height:12px;background:{HEX_COLORS[clr]};"></div>'
-                html += '</div></div>'
+                html += f"""<a href="/?face_click={f_k}" target="_self" style="text-decoration:none;">
+                    <div style="text-align:center; {style} border-radius:4px; padding:2px; background:rgba(255,255,255,0.02);">
+                        <div style="font-size:10px; color:#aaa;">{COLOR_EMOJIS[CENTER_COLORS[f_k]]} {f_k[0]}</div>
+                        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1px;">"""
+                for i, clr in enumerate(st.session_state.cube_state[f_k]):
+                    # Ensure map center is also physically accurate
+                    display_color = clr if i != 4 else CENTER_COLORS[f_k]
+                    html += f'<div style="width:12px;height:12px;background:{HEX_COLORS[display_color]};"></div>'
+                html += '</div></div></a>'
             else: html += '<div></div>'
     html += '</div>'
     return html
