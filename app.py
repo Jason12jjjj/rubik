@@ -126,8 +126,8 @@ def auto_detect_cube_region(img):
             x, y, w, bh = cv2.boundingRect(cnt)
 
             aspect = min(w, bh) / max(w, bh)
-           if aspect < 0.70:
-                continue
+            if aspect < 0.70:
+            continue
 
             cx = x + w / 2.0
             cy = y + bh / 2.0
