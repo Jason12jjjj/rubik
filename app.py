@@ -171,37 +171,41 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
 
     # Scan Phase (Multi-Scale)
     t1 = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 13, 2)
-    c1, ra1, rs1 = process_contours(cv2.findContours(t1, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0])
-    candidates.extend(c1); rej_area += ra1; rej_shape += rs1
+    candidates_raw, rej_area, rej_shape = process_contours(cv2.findContours(t1, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0])
     
-    if len(candidates) < 7:
+    if len(candidates_raw) < 7:
         trace.append("Scan 1 low yield. Trying Scan 2 (Broad Filter)...")
         t2 = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 81, 2)
         c2, ra2, rs2 = process_contours(cv2.findContours(t2, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0], tag="SILENT")
-        for cand2 in c2:
-            if not any(np.sqrt((cand2['center'][0]-c1c['center'][0])**2 + (cand2['center'][1]-c1c['center'][1])**2) < 10 for c1c in candidates):
-                candidates.append(cand2)
-        rej_area += ra2; rej_shape += rs2
+        candidates_raw.extend(c2); rej_area += ra2; rej_shape += rs2
 
-    if len(candidates) < 7:
+    if len(candidates_raw) < 7:
         trace.append("Scan 1/2 failed. Retrying Scan 3 (Global Otsu)...")
         _, t3 = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         c3, ra3, rs3 = process_contours(cv2.findContours(t3, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0], tag="SILENT")
-        for cand3 in c3:
-            if not any(np.sqrt((cand3['center'][0]-ca['center'][0])**2 + (cand3['center'][1]-ca['center'][1])**2) < 10 for ca in candidates):
-                candidates.append(cand3)
+        candidates_raw.extend(c3)
 
+    # 🧼 NMS / DEDUPLICATION: Prevent points from stacking on same sticker
+    candidates = []
+    if candidates_raw:
+        # Sort by area (larger often better/outer contour)
+        candidates_raw.sort(key=lambda x: x['area'], reverse=True)
+        for cand in candidates_raw:
+            if not any(np.sqrt((cand['center'][0]-c['center'][0])**2 + (cand['center'][1]-c['center'][1])**2) < 15 for c in candidates):
+                candidates.append(cand)
+    
     if sharp < 25: trace.append("⚠️ WARNING: Image is very blurry. Please hold steady.")
-    trace.append(f"Trace: Final Candidates={len(candidates)} (Rejected: Area={rej_area}, Shape={rej_shape})")
+    trace.append(f"Trace: Final Candidates={len(candidates)} (Deduplicated from {len(candidates_raw)})")
     
     best_cnt = None
     best_cluster = []
     pass_info = "Searching..."
 
-    if len(candidates) >= 7: # 🔥 Increased threshold from 4 to 7
+    if len(candidates) >= 4: # Lowered to 4 for cluster growth, 7 for final lock
         max_score = 0
         avg_w = np.mean([np.sqrt(c['area']) for c in candidates])
         threshold_dist = avg_w * 3.5
+        min_dist = avg_w * 0.7 # 🔥 MIN DISTANCE to prevent collapse
         pts = np.array([c['center'] for c in candidates])
         
         for i in range(len(candidates)):
@@ -210,7 +214,8 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
             for j in range(len(candidates)):
                 if i == j: continue
                 d = np.sqrt(np.sum((pts[i] - pts[j])**2))
-                if d < threshold_dist: 
+                # Must be close enough to be a neighbor but NOT the same sticker
+                if min_dist < d < threshold_dist: 
                     cluster.append(candidates[j])
                     c_pts.append(pts[j])
             
