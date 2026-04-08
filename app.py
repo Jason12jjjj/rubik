@@ -17,6 +17,21 @@ if 'programmatic_face' not in st.session_state:
     st.session_state.programmatic_face = 'Front'
 if 'last_solution' not in st.session_state:
     st.session_state.last_solution = None
+if 'selected_color' not in st.session_state:
+    st.session_state.selected_color = 'White'
+if 'history' not in st.session_state:
+    st.session_state.history = [json.dumps(st.session_state.cube_state)]
+if 'history_index' not in st.session_state:
+    st.session_state.history_index = 0
+
+def push_history():
+    # Capture current state after modification
+    state_json = json.dumps(st.session_state.cube_state)
+    # If we are in the middle of history, prune the future
+    if st.session_state.history_index < len(st.session_state.history) - 1:
+        st.session_state.history = st.session_state.history[:st.session_state.history_index + 1]
+    st.session_state.history.append(state_json)
+    st.session_state.history_index = len(st.session_state.history) - 1
 
 # --- 3. UI COMPONENTS ---
 def render_interactive_map(active_face):
@@ -29,7 +44,7 @@ def render_interactive_map(active_face):
             if f_k:
                 style = "border:2px solid #00e5ff; box-shadow:0 0 8px #00e5ff;" if f_k == active_face else "border:1px solid #444;"
                 html += f'<div style="text-align:center; cursor:pointer; {style} border-radius:4px; padding:2px;">'
-                html += f'<div style="font-size:10px; color:#aaa;">{f_k[0]}</div>'
+                html += f'<div style="font-size:10px; color:#aaa;">{COLOR_EMOJIS[CENTER_COLORS[f_k]]} {f_k[0]}</div>'
                 html += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1px;">'
                 for clr in st.session_state.cube_state[f_k]:
                     html += f'<div style="width:12px;height:12px;background:{HEX_COLORS[clr]};"></div>'
@@ -40,7 +55,6 @@ def render_interactive_map(active_face):
 
 def render_3d_player(solution):
     """Embeds the Twisty Player for solution visualization"""
-    # Inverse algorithm for setup (to show the cube at its scrambled state first)
     def inverse_alg(s):
         moves = []
         for m in reversed(s.split()):
@@ -63,7 +77,7 @@ def render_3d_player(solution):
 
 # --- 4. SIDEBAR NAVIGATION ---
 with st.sidebar:
-    st.title("🧩 Manual Console")
+    st.title("🧩 Solver Console")
     st.markdown("### 🗺️ Context Map")
     st.markdown(render_interactive_map(st.session_state.programmatic_face), unsafe_allow_html=True)
     
@@ -78,7 +92,9 @@ with st.sidebar:
     st.divider()
     if st.button("🗑️ Reset All Colors", use_container_width=True):
         st.session_state.cube_state = {f: (['White']*4 + [CENTER_COLORS[f]] + ['White']*4) for f in FACES}
-        st.session_state.last_solution = None; st.rerun()
+        st.session_state.last_solution = None
+        push_history()
+        st.rerun()
 
 # --- 5. MAIN INTERFACE ---
 curr = st.session_state.programmatic_face
@@ -90,37 +106,60 @@ with h1:
     if st.button("⬅️ Prev", use_container_width=True):
         st.session_state.programmatic_face = FACES[(FACES.index(curr)-1)%6]; st.rerun()
 with h2:
-    st.markdown(f"<h2 style='text-align:center; color:#00e5ff;'>Editing: {curr} Face</h2>", unsafe_allow_html=True)
+    face_emoji = COLOR_EMOJIS[CENTER_COLORS[curr]]
+    st.markdown(f"<h2 style='text-align:center; color:#00e5ff;'>{face_emoji} Editing: {curr} Face</h2>", unsafe_allow_html=True)
 with h3:
     if st.button("Next ➡️", use_container_width=True):
         st.session_state.programmatic_face = FACES[(FACES.index(curr)+1)%6]; st.rerun()
 
-st.info(f"💡 Click the buttons below to change sticker colors for the **{curr}** face.")
+# UNDO / REDO CONTROLS
+u1, u2, u3 = st.columns([1, 1, 4])
+with u1:
+    if st.button("⏪ Undo", disabled=st.session_state.history_index <= 0, use_container_width=True):
+        st.session_state.history_index -= 1
+        st.session_state.cube_state = json.loads(st.session_state.history[st.session_state.history_index])
+        st.rerun()
+with u2:
+    if st.button("Redo ⏩", disabled=st.session_state.history_index >= len(st.session_state.history)-1, use_container_width=True):
+        st.session_state.history_index += 1
+        st.session_state.cube_state = json.loads(st.session_state.history[st.session_state.history_index])
+        st.rerun()
 
-c_edit, c_sol = st.columns([1, 1])
+st.info(f"💡 Select a color from the Palette then click the squares to fill.")
+
+c_edit, c_sol, c_guide = st.columns([1, 1.1, 1])
 
 with c_edit:
-    # Manual Grid Entry
-    def cycle_color(face_name, index):
-        colors = list(HEX_COLORS.keys())
-        current = st.session_state.cube_state[face_name][index]
-        st.session_state.cube_state[face_name][index] = colors[(colors.index(current)+1) % len(colors)]
-        st.session_state.last_solution = None # Reset solution on change
+    st.markdown("#### 🎨 Color Palette")
+    pal_cols = st.columns(6)
+    for i, color_name in enumerate(HEX_COLORS.keys()):
+        is_selected = st.session_state.selected_color == color_name
+        btn_label = f"{COLOR_EMOJIS[color_name]} {'•' if is_selected else ''}"
+        if pal_cols[i].button(btn_label, key=f"pal_{color_name}", use_container_width=True):
+            st.session_state.selected_color = color_name
+            st.rerun()
+
+    st.divider()
+    
+    def paint_color(face_name, index):
+        st.session_state.cube_state[face_name][index] = st.session_state.selected_color
+        st.session_state.last_solution = None
+        push_history()
 
     for r in range(3):
         rows = st.columns(3)
         for c in range(3):
             idx = r*3 + c
             color_val = st.session_state.cube_state[curr][idx]
-            if idx == 4: # Center is fixed
+            if idx == 4:
                 rows[c].button(f"{COLOR_EMOJIS[color_val]}\nCtr", disabled=True, use_container_width=True)
             else:
-                rows[c].button(f"{COLOR_EMOJIS[color_val]}\n{color_val}", key=f"btn_{curr}_{idx}", on_click=cycle_color, args=(curr, idx), use_container_width=True)
+                rows[c].button(f"{COLOR_EMOJIS[color_val]}\n{color_val}", key=f"btn_{curr}_{idx}", on_click=paint_color, args=(curr, idx), use_container_width=True)
 
 with c_sol:
-    st.markdown("### 🚀 Restore Logic")
-    if st.button("INITIATE SOLVE PROTOCOL", type="primary", use_container_width=True):
-        with st.spinner("Analyzing cube matrix..."):
+    st.markdown("### 🚀 Generate Solution")
+    if st.button("CALCULATE RECOVERY PATH", type="primary", use_container_width=True):
+        with st.spinner("Analyzing cube state..."):
             ok, msg = validate_cube_state(st.session_state.cube_state)
             if ok:
                 st.session_state.last_solution = solve_cube(st.session_state.cube_state)
@@ -130,11 +169,43 @@ with c_sol:
     if st.session_state.last_solution:
         sol = st.session_state.last_solution
         if sol == "!IMPOSSIBLE_STATE!":
-            st.error("⚠️ IMPOSSIBLE STATE: Please double-check the colors. Some corners or edges might be flipped.")
+            st.error("⚠️ IMPOSSIBLE STATE: Please double-check the colors.")
         else:
-            st.success(f"✅ Logic Found: {sol}")
+            st.success(f"✅ Solution Found: {sol}")
             render_3d_player(sol)
+
+with c_guide:
+    st.markdown("### 🎓 Beginner Academy")
+    tab1, tab2, tab3 = st.tabs(["LBL 1-2", "LBL 3-4", "Algorithms"])
+    
+    with tab1:
+        st.markdown("#### Step 1: The White Cross")
+        st.caption("Create a 'Daisy' with white petals around yellow center, then flip to white center.")
+        st.markdown("#### Step 2: First Layer Corners")
+        st.caption("Align a corner and use: **R U R' U'** until the corner is in place.")
+        st.code("Sexy Move: R U R' U'", language="markdown")
+    
+    with tab2:
+        st.markdown("#### Step 3: Second Layer")
+        st.caption("To insert a piece from top to right-middle:")
+        st.code("U R U' R' U' F' U F", language="markdown")
+        st.markdown("#### Step 4: Yellow Cross")
+        st.caption("Convert dot/line/L-shape to cross:")
+        st.code("F R U R' U' F'", language="markdown")
+        
+    with tab3:
+        st.markdown("#### Key Algorithms")
+        st.markdown("**Sune (Orient Corners):**")
+        st.code("R U R' U R U2 R'", language="markdown")
+        st.markdown("**Niklas (Position Corners):**")
+        st.code("U R U' L' U R' U' L", language="markdown")
+        st.markdown("**Last Layer Edges:**")
+        st.code("F2 U L R' F2 L' R U F2", language="markdown")
 
 # Footer info
 st.markdown("---")
-st.caption("Manual Mode: No Camera. No AI Detection. Pure Human Logic. Verified by Kociemba.")
+st.caption("Rubik's Solver Console: Precision logic with manual input. Verified by Kociemba Engine.")
+
+# Footer info
+st.markdown("---")
+st.caption("Rubik's Solver Console: Precision logic with manual input. Verified by Kociemba Engine.")
