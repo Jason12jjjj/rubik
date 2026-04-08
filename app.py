@@ -108,21 +108,26 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
     img_padded = cv2.copyMakeBorder(img, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=[0, 0, 0])
     h_p, w_p = img_padded.shape[:2]
     
+    # Standardize work height
     work_h = 650
     work_w = int(w_p * (work_h / h_p))
     work_img = cv2.resize(img_padded, (work_w, work_h))
     gray = cv2.cvtColor(work_img, cv2.COLOR_BGR2GRAY)
+    
+    # 📸 ENVIRONMENT SENSING & ENHANCEMENT
+    bright = np.mean(gray)
+    sharp = cv2.Laplacian(gray, cv2.CV_64F).var()
+    trace.append(f"📸 Env: Brightness={bright:.1f}, Sharpness={sharp:.1f}")
+    
+    # Auto-Enhance if needed
+    if bright < 65 or bright > 220:
+        trace.append("⚡ Extreme light detected. Applying CLAHE Contrast Boost...")
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+        gray = clahe.apply(gray)
+        
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     
-    # 💎 Feature Scraper (Multi-Threshold Strategy)
-    trace.append("Scan 1: High-Contrast Adaptive Threshold...")
-    thresh1 = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 13, 2)
-    cnts, _ = cv2.findContours(thresh1, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    candidates = []
-    all_raw = []
-    rej_area, rej_shape = 0, 0
-    
+    # 💎 Feature Scraper (Multi-Threshold V2)
     def process_contours(clist):
         found = []
         ra, rs = 0, 0
@@ -130,19 +135,17 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
             area = cv2.contourArea(c)
             x, y, w, h = cv2.boundingRect(c)
             ratio = min(w, h) / max(w, h) if max(w, h) > 0 else 0
-            # Relaxed Hand-held Defense
             hull = cv2.convexHull(c)
             h_area = cv2.contourArea(hull)
             solidity = area / h_area if h_area > 0 else 0
             extent = area / (w * h) if (w * h) > 0 else 0
             
             roi_mini = work_img[max(0,y):min(work_h,y+h), max(0,x):min(work_w,x+w)]
-            bgr_mean = np.mean(roi_mini, axis=(0,1)) if roi_mini.size > 0 else [0,0,0]
-            is_skin = (bgr_mean[2] > bgr_mean[1] > bgr_mean[0]) and (bgr_mean[2] - bgr_mean[0] > 30)
+            bgr_m = np.mean(roi_mini, axis=(0,1)) if roi_mini.size > 0 else [0,0,0]
+            is_skin = (bgr_m[2] > bgr_m[1] > bgr_m[0]) and (bgr_m[2]-bgr_m[0] > 30)
 
             if (work_h*0.005)**2 < area < (work_h*0.4)**2:
-                # Relaxed thresholds: 0.7 solidity, 0.4 extent, 0.4 ratio
-                if ratio > 0.4 and solidity > 0.75 and extent > 0.45:
+                if ratio > 0.4 and solidity > 0.7 and extent > 0.4:
                     if not is_skin or ratio > 0.8:
                         M = cv2.moments(c)
                         if M["m00"] > 0:
@@ -154,16 +157,20 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
             all_raw.append({'box':(x,y,w,h), 'status': "YELLOW" if (len(found)>0 and found[-1]['cnt'] is c) else "RED"})
         return found, ra, rs
 
-    candidates, rej_area, rej_shape = process_contours(cnts)
+    trace.append("Scan 1: Standard Adaptive...")
+    t1 = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 13, 2)
+    cnts1, _ = cv2.findContours(t1, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    all_raw = []
+    candidates, rej_area, rej_shape = process_contours(cnts1)
     
-    # ⚡ AUTO-RETRY: If Scan 1 fails to find a minimum cluster, try Scan 2 (Sensitive)
     if len(candidates) < 4:
-        trace.append("Scan 1 failed. Retrying Scan 2: Sensitive Search...")
-        thresh2 = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 25, 5)
-        cnts2, _ = cv2.findContours(thresh2, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        trace.append("Scan 1 failed. Retrying Scan 2 (Sensitive)...")
+        t2 = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 2)
+        cnts2, _ = cv2.findContours(t2, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         candidates, ra2, rs2 = process_contours(cnts2)
         rej_area += ra2; rej_shape += rs2
 
+    if sharp < 20: trace.append("⚠️ WARNING: Image is very blurry. Please hold steady.")
     trace.append(f"Trace: Candidates={len(candidates)} (Rejected: Area={rej_area}, Shape={rej_shape})")
     
     best_cnt = None
