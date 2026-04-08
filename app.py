@@ -165,13 +165,13 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
 
     # Scan 1: Fine-grained for distant stickers
     t1 = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 13, 2)
-    c1, ra1, rs1 = process_contours(cv2.findContours(t1, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0])
+    c1, ra1, rs1 = process_contours(cv2.findContours(t1, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0])
     candidates.extend(c1); rej_area += ra1; rej_shape += rs1
     
     # Scan 2: Large-scale for close-ups (BIG BlockSize)
     trace.append("Scan 2: Large-window adaptive search for close-ups...")
     t2 = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 81, 2)
-    c2, ra2, rs2 = process_contours(cv2.findContours(t2, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0], tag="SILENT")
+    c2, ra2, rs2 = process_contours(cv2.findContours(t2, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0], tag="SILENT")
     # Add unique stickers from Scan 2
     for cand2 in c2:
         if not any(np.sqrt((cand2['center'][0]-c1c['center'][0])**2 + (cand2['center'][1]-c1c['center'][1])**2) < 10 for c1c in candidates):
@@ -182,7 +182,7 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
     if len(candidates) < 4:
         trace.append("Scan 1/2 failed. Retrying Scan 3: Global Otsu...")
         _, t3 = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        c3, ra3, rs3 = process_contours(cv2.findContours(t3, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0], tag="SILENT")
+        c3, ra3, rs3 = process_contours(cv2.findContours(t3, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0], tag="SILENT")
         for cand3 in c3:
             if not any(np.sqrt((cand3['center'][0]-ca['center'][0])**2 + (cand3['center'][1]-ca['center'][1])**2) < 10 for ca in candidates):
                 candidates.append(cand3)
