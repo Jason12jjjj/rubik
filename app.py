@@ -96,163 +96,118 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── COMPUTER VISION FUNCTIONS ────────────────────────────────────────────────
-def auto_detect_cube_region(img):
-    """
-    Search for a 3x3 grid of stickers instead of one large square.
-    More robust against reflections and edge noise.
-    """
-    h_img, w_img = img.shape[:2]
+# ── ADVANCED COMPUTER VISION (WARP PERSPECTIVE VERSION) ──────────────────────
+def auto_detect_cube_face(image_bytes, expected_center):
+    file_bytes = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
+    img = cv2.imdecode(file_bytes, 1)
+    if img is None: return None, None, False
     
-    # 1. Preprocessing for sticker detection
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    # Bilateral filter preserves edges but kills noise/glare
-    blurred = cv2.bilateralFilter(gray, 9, 75, 75)
-    # Adaptive threshold is great for varying light
-    thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
+    # 1. Padding Trick: Add a black border to allow contours to be closed at the edge
+    pad = 30
+    img_padded = cv2.copyMakeBorder(img, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=[0, 0, 0])
+    h_p, w_p = img_padded.shape[:2]
     
-    # 2. Find small square-ish contours (candidates for stickers)
-    cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    sticker_candidates = []
-    min_stk_area = (min(h_img, w_img) * 0.05) ** 2
-    max_stk_area = (min(h_img, w_img) * 0.25) ** 2
+    # Resize for processing
+    work_h = 650
+    work_w = int(w_p * (work_h / h_p))
+    work_img = cv2.resize(img_padded, (work_w, work_h))
 
+    # Pre-processing
+    gray = cv2.cvtColor(work_img, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    
+    # Try multiple detection passes
+    best_cnt = None
+    
+    # Pass 1: Canny + Contour (Finding the big square)
+    edges = cv2.Canny(blurred, 20, 100)
+    edges = cv2.dilate(edges, np.ones((3,3), np.uint8), iterations=1)
+    cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    max_area = 0
     for cnt in cnts:
         area = cv2.contourArea(cnt)
-        if area < min_stk_area or area > max_stk_area:
-            continue
-        
-        peri = cv2.arcLength(cnt, True)
-        approx = cv2.approxPolyDP(cnt, 0.04 * peri, True)
-        x, y, w, bh = cv2.boundingRect(cnt)
-        aspect = min(w, bh) / max(w, bh)
-        
-        # Sticker must be roughly square
-        if aspect < 0.75: continue
-        
-        # Center of the candidate
-        cx, cy = x + w/2, y + bh/2
-        sticker_candidates.append({'center': (cx, cy), 'area': area, 'w': w, 'h': bh})
+        if area > (work_h * 0.20) ** 2:
+            peri = cv2.arcLength(cnt, True)
+            approx = cv2.approxPolyDP(cnt, 0.04 * peri, True)
+            if len(approx) == 4 and area > max_area:
+                max_area = area
+                best_cnt = approx
 
-    if len(sticker_candidates) < 3:
-        # Fallback to the old "One Big Square" logic if we can't find stickers
-        edges = cv2.Canny(blurred, 30, 100)
-        cnts_big, _ = cv2.findContours(cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((5,5))), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        best_big = None
-        best_score = 0
-        for cnt in cnts_big:
-            area = cv2.contourArea(cnt)
-            if area < (min(h_img, w_img)*0.3)**2: continue
-            x, y, w, bh = cv2.boundingRect(cnt)
-            score = area * (min(w, bh)/max(w, bh))
-            if score > best_score:
-                best_score = score
-                best_big = (x, y, int(min(w, bh)))
-        return best_big
+    # Pass 2: Fallback to Sticker Clustering if Big Square fails
+    if best_cnt is None:
+        thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
+        cnts_s, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        stks = []
+        for c in cnts_s:
+            a = cv2.contourArea(c)
+            if (work_h*0.04)**2 < a < (work_h*0.25)**2:
+                peri = cv2.arcLength(c, True)
+                appr = cv2.approxPolyDP(c, 0.04*peri, True)
+                if len(appr) == 4:
+                    x,y,w,h = cv2.boundingRect(c)
+                    if 0.7 < w/h < 1.3: stks.append(c)
+        if len(stks) >= 4:
+            # Find the convex hull of all candidate stickers to form a face
+            combined = np.vstack(stks)
+            hull = cv2.convexHull(combined)
+            peri = cv2.arcLength(hull, True)
+            best_cnt = cv2.approxPolyDP(hull, 0.04 * peri, True)
+            if len(best_cnt) != 4:
+                # Force a bounding rect if hull is complex
+                xr, yr, wr, hr = cv2.boundingRect(hull)
+                best_cnt = np.array([[[xr,yr]], [[xr+wr,yr]], [[xr+wr,yr+hr]], [[xr,yr+hr]]])
 
-    # 3. Simple clustering: Group candidates by proximity to find a 3x3 pattern
-    # We find the sticker closest to the center of the image and its neighbors
-    sticker_candidates.sort(key=lambda s: ((s['center'][0]-w_img/2)**2 + (s['center'][1]-h_img/2)**2))
-    
-    # Take the top candidates and assume they form the grid
-    top_candidates = sticker_candidates[:min(len(sticker_candidates), 12)]
-    
-    # Find bounding box of these candidates
-    all_x = [s['center'][0] for s in top_candidates]
-    all_y = [s['center'][1] for s in top_candidates]
-    min_x, max_x = min(all_x), max(all_x)
-    min_y, max_y = min(all_y), max(all_y)
-    
-    # Calculate grid properties
-    grid_w = max_x - min_x
-    grid_h = max_y - min_y
-    
-    # Expand slightly to cover the full face
-    margin = int(max(grid_w, grid_h) * 0.2)
-    gs = int(max(grid_w, grid_h) + margin)
-    sx = int(min_x - margin/2 - grid_w*0.1) # Offset to center the 3x3
-    sy = int(min_y - margin/2 - grid_h*0.1)
-    
-    # Sanity checks
-    sx, sy = max(0, sx), max(0, sy)
-    gs = min(gs, min(h_img-sy, w_img-sx))
-    
-    if gs < min(h_img, w_img) * 0.2: return None
-    
-    return (sx, sy, gs)
+    if best_cnt is None: return None, None, False
 
-def classify_color(bgr_pixel, std_colors):
-    pixel_lab = cv2.cvtColor(np.uint8([[[bgr_pixel[0], bgr_pixel[1], bgr_pixel[2]]]]), cv2.COLOR_BGR2LAB)[0][0]
-    l, a, b = int(pixel_lab[0]), int(pixel_lab[1]), int(pixel_lab[2])
-    min_dist, best_c = float('inf'), 'White'
-    for name, (hs, ss, vs) in std_colors.items():
-        sl = cv2.cvtColor(cv2.cvtColor(np.uint8([[[hs, ss, vs]]]), cv2.COLOR_HSV2BGR), cv2.COLOR_BGR2LAB)[0][0]
-        dist = ((a-int(sl[1]))*2)**2 + ((b-int(sl[2]))*2)**2 + ((l-int(sl[0]))*(0.5 if name=='White' else 0.15))**2
-        if dist < min_dist: min_dist, best_c = dist, name
-    if best_c == 'Red' and bgr_pixel[2]>0 and (bgr_pixel[1]/bgr_pixel[2])>0.3: return 'Orange'
-    return best_c
+    # --- Perspective Warping ---
+    # Rescale points to padded image size then adjust for padding
+    pts = (best_cnt.reshape(4, 2) * (h_p / work_h)).astype("float32")
+    
+    # Sort points
+    rect = np.zeros((4, 2), dtype="float32")
+    s = pts.sum(axis=1)
+    rect[0], rect[2] = pts[np.argmin(s)], pts[np.argmax(s)]
+    diff = np.diff(pts, axis=1)
+    rect[1], rect[3] = pts[np.argmin(diff)], pts[np.argmax(diff)]
 
+    dst = np.array([[0,0], [299,0], [299,299], [0,299]], dtype="float32")
+    M = cv2.getPerspectiveTransform(rect, dst)
+    warped = cv2.warpPerspective(img_padded, M, (300, 300))
+    debug_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB)
+
+    std_colors = get_calibrated_colors()
+    detected = ['White'] * 9
+    cell_sz = 100
+    for r in range(3):
+        for c in range(3):
+            cx, cy = int((c+0.5)*cell_sz), int((r+0.5)*cell_sz)
+            roi = warped[cy-12:cy+12, cx-12:cx+12]
+            if roi.size == 0: continue
+            
+            bgr_avg = np.median(roi, axis=(0,1)).astype(np.uint8)
+            pixel_lab = cv2.cvtColor(np.uint8([[[bgr_avg[0], bgr_avg[1], bgr_avg[2]]]]), cv2.COLOR_BGR2LAB)[0][0]
+            
+            min_dist, best_c = float('inf'), 'White'
+            for c_name, (hs, ss, vs) in std_colors.items():
+                std_lab = cv2.cvtColor(cv2.cvtColor(np.uint8([[[hs, ss, vs]]]), cv2.COLOR_HSV2BGR), cv2.COLOR_BGR2LAB)[0][0]
+                # Lab distance with weight tuning (L: lightness, a: green-red, b: blue-yellow)
+                d = np.sqrt(0.5*(int(pixel_lab[0])-int(std_lab[0]))**2 + 1.25*(int(pixel_lab[1])-int(std_lab[1]))**2 + (int(pixel_lab[2])-int(std_lab[2]))**2)
+                if d < min_dist: min_dist, best_c = d, c_name
+            
+            detected[r*3+c] = best_c
+            cv2.circle(debug_warped, (cx, cy), 15, (255, 255, 255), 2)
+            cv2.putText(debug_warped, best_c, (cx-30, cy+35), 0, 0.5, (0,0,0), 3)
+            cv2.putText(debug_warped, best_c, (cx-30, cy+35), 0, 0.5, (255,255,255), 1)
+
+    detected[4] = expected_center
+    return detected, debug_warped, True
+
+# ── LEGACY CV FUNCTIONS (Kept for manual override fallback) ──────────────────
 def get_calibrated_colors():
-    defaults = {'White':(0,30,200), 'Yellow':(30,140,200), 'Orange':(13,170,200), 'Red':(0,180,150), 'Green':(65,140,150), 'Blue':(110,150,150)}
+    defaults = {'White':(0,30,220), 'Yellow':(30,160,200), 'Orange':(12,200,240), 'Red':(0,210,180), 'Green':(60,180,150), 'Blue':(110,180,160)}
     for k, v in st.session_state.custom_std_colors.items(): defaults[k] = tuple(v)
     return defaults
-
-def extract_colors_from_image(image_bytes, expected_center):
-    img = cv2.imdecode(np.asarray(bytearray(image_bytes.read()), dtype=np.uint8), 1)
-    if img is None: return None, None, "error"
-    h_i, w_i = img.shape[:2]
-    std = get_calibrated_colors()
-    region = auto_detect_cube_region(img) if st.session_state.auto_detect else None
-    if region:
-        sx, sy, gs, meth = region[0], region[1], region[2], "auto"
-    else:
-        if st.session_state.auto_detect: return None, None, "not_found"
-        gs = int(min(h_i, w_i) * (st.session_state.cube_size/100.0))
-        sx, sy, meth = (w_i-gs)//2, (h_i-gs)//2, "manual"
-    
-    cs = gs // 3
-    # Step 1: DYNAMIC LOCAL CALIBRATION (Central Anchor)
-    # We sample a larger block of the central sticker and anchor the 'standard' color to it.
-    cx_c, cy_c = int(sx + 1.5*cs), int(sy + 1.5*cs)
-    # Block sample: 10x10 block median
-    roi_c = img[max(0, cy_c-7):min(h_i, cy_c+7), max(0, cx_c-7):min(w_i, cx_c+7)]
-    if roi_c.size > 0:
-        # Use median to ignore specularity/reflections
-        b, g, r = np.median(roi_c, axis=(0,1)).astype(np.uint8)
-        if classify_color((b,g,r), std) == expected_center:
-            hsv = cv2.cvtColor(np.uint8([[[b,g,r]]]), cv2.COLOR_HSV2BGR)
-            hsv = cv2.cvtColor(hsv, cv2.COLOR_BGR2HSV)[0][0]
-            std[expected_center] = (int(hsv[0]), int(hsv[1]), int(hsv[2]))
-
-    detected, debug = [], img.copy()
-    col_rect = (0, 255, 0) if meth=="auto" else (255, 255, 255)
-    cv2.rectangle(debug, (sx, sy), (sx+gs, sy+gs), col_rect, 3)
-    
-    for row in range(3):
-        for col in range(3):
-            # Center of the sticker
-            cx, cy = int(sx + (col+0.5)*cs), int(sy + (row+0.5)*cs)
-            
-            # Step 2: Block Sampling (10x10 area)
-            # This is much more stable than a single pixel
-            y1, y2 = max(0, cy-7), min(h_i, cy+7)
-            x1, x2 = max(0, cx-7), min(w_i, cx+7)
-            roi = img[y1:y2, x1:x2]
-            
-            if roi.size > 0:
-                # Use median to filter out noise/dust
-                avg_bgr = np.median(roi, axis=(0,1)).astype(np.uint8)
-                clr = classify_color(avg_bgr, std)
-            else:
-                clr = 'White'
-                
-            detected.append(clr)
-            cv2.circle(debug, (cx, cy), 8, (0, 255, 0), -1)
-            cv2.putText(debug, clr, (cx-20, cy+25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 3)
-            cv2.putText(debug, clr, (cx-20, cy+25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
-            
-    return detected, cv2.cvtColor(debug, cv2.COLOR_BGR2RGB), meth
 
 # ── UI COMPONENTS ────────────────────────────────────────────────────────────
 def render_3d_solution(solution_str, speed):
@@ -346,35 +301,33 @@ if app_mode == "📸 Scan & Solve":
         if act:
             key = f"{curr}_{getattr(act, 'file_id', id(act))}"
             
-            # If we don't have a confirmed scan yet, process this one
             if st.session_state.processed_photos.get(curr) != key:
                 if hasattr(act, 'seek'): act.seek(0)
-                d, db, m = extract_colors_from_image(act, CENTER_COLORS[curr])
+                # Use NEW Perspective Warp Vision
+                d, db, success = auto_detect_cube_face(act, CENTER_COLORS[curr])
                 
-                if d:
-                    # Show preview but DON'T jump yet
-                    st.image(db, caption=f"AI Detection ({m.upper()}): Please verify colors on the right.", use_container_width=True)
-                    
-                    st.success("✅ **Scan processed!** Verify the grid on the right, then confirm below.")
+                if success:
+                    st.session_state.cube_state[curr] = d
+                    st.image(db, caption="🚀 Perspective Stabilized View", use_container_width=True)
+                    st.success("✨ **I flattened the cube face!** Check the orientation and colors.")
                     
                     col_b1, col_b2 = st.columns(2)
                     with col_b1:
-                        if st.button("👍 Confirm & Save", type="primary", use_container_width=True, key=f"conf_{key}"):
-                            d[4] = CENTER_COLORS[curr]
-                            st.session_state.cube_state[curr] = d
+                        if st.button("✅ Confirm & Save", type="primary", use_container_width=True, key=f"conf_{key}"):
                             st.session_state.processed_photos[curr] = key
                             st.session_state[f"cached_img_{curr}"] = db
-                            
                             if st.session_state.auto_advance:
                                 un = [f for f in FACES if f not in st.session_state.processed_photos]
                                 if un: st.session_state.programmatic_face = un[0]
                             st.rerun()
                     with col_b2:
-                        if st.button("🔄 Retake / Ignore", use_container_width=True, key=f"ign_{key}"):
-                            st.session_state.uploader_key_version += 1
-                            st.rerun()
+                        if st.button("🔄 Retake", use_container_width=True, key=f"ign_{key}"):
+                            st.session_state.uploader_key_version += 1; st.rerun()
                 else:
-                    st.error("❌ Detection failed. Ensure the cube is clearly visible and within the center area.")
+                    st.error("❌ Cube outline not found. Try to hold it flatter and centering it.")
+                    # Show the original image as fallback
+                    if hasattr(act, 'seek'): act.seek(0)
+                    st.image(act, use_container_width=True)
 
         # Show the permanent saved image if it exists
         elif curr in st.session_state.processed_photos and f"cached_img_{curr}" in st.session_state:
