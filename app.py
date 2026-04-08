@@ -126,24 +126,41 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
         x, y, w, h = cv2.boundingRect(c)
         ratio = min(w, h) / max(w, h) if max(w, h) > 0 else 0
         
-        status = "RED" # Default reject
-        if (work_h*0.005)**2 < area < (work_h*0.35)**2:
-            if ratio > 0.4:
-                status = "YELLOW" # Potential
-                M = cv2.moments(c)
-                if M["m00"] > 0:
-                    candidates.append({'cnt': c, 'center': (int(M["m10"]/M["m00"]), int(M["m01"]/M["m00"])), 'area': area})
-        all_raw.append({'box': (x,y,w,h), 'status': status})
+        # 💎 HAND-HELD DEFENSE: Solidity & Extent checks
+        hull_area = cv2.contourArea(cv2.convexHull(c))
+        solidity = area / hull_area if hull_area > 0 else 0
+        extent = area / (w * h) if (w * h) > 0 else 0
+        
+        # Skin-tone heuristic (B < G < R pattern with bounded ratios)
+        roi_mini = work_img[max(0,y):min(work_h,y+h), max(0,x):min(work_w,x+w)]
+        bgr_mean = np.mean(roi_mini, axis=(0,1)) if roi_mini.size > 0 else [0,0,0]
+        is_skin_like = (bgr_mean[2] > bgr_mean[1] > bgr_mean[0]) and (bgr_mean[2] - bgr_mean[0] > 30)
 
-    trace.append(f"Filtered to {len(candidates)} squares (Ratio > 0.4, Area checked).")
+        status = "RED" # Default reject
+        # Relaxed area but stricter shape for handheld support
+        if (work_h*0.005)**2 < area < (work_h*0.4)**2:
+            if ratio > 0.45 and solidity > 0.85 and extent > 0.6:
+                if not is_skin_like or ratio > 0.8: # Skin-like must be very square to pass
+                    status = "YELLOW" # Potential
+                    M = cv2.moments(c)
+                    if M["m00"] > 0:
+                        cx, cy = int(M["m10"]/M["m00"]), int(M["m01"]/M["m00"])
+                        # Center-weighted score: 1.0 at center, drops off at edges
+                        dist_center = np.sqrt((cx - work_w/2)**2 + (cy - work_h/2)**2)
+                        center_weight = 1.0 / (1.0 + (dist_center/work_w))
+                        candidates.append({'cnt': c, 'center': (cx, cy), 'area': area, 'weight': center_weight})
+        
+        all_raw.append({'box': (x,y,w,h), 'status': status, 'reason': "Skin" if is_skin_like else "Shape"})
+
+    trace.append(f"Found {len(candidates)} high-quality cube-like squares (Filtered skin/noise).")
     
     best_cnt = None
     best_cluster = []
     pass_info = "Searching..."
 
     if len(candidates) >= 4:
-        # Cluster logic
-        max_density = 0
+        # Cluster logic with center weighting
+        max_score = 0
         avg_w = np.mean([np.sqrt(c['area']) for c in candidates])
         threshold_dist = avg_w * 2.8
         pts = np.array([c['center'] for c in candidates])
@@ -155,12 +172,15 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
                 d = np.sqrt(np.sum((pts[i] - pts[j])**2))
                 if d < threshold_dist: cluster.append(candidates[j])
             
-            score = len(cluster)
-            if score >= 9: score += 10
-            if score > max_density:
-                max_density, best_cluster = score, cluster
+            # Score = count * avg_weight (favors 9 stickers near center)
+            score = len(cluster) * np.mean([c['weight'] for c in cluster])
+            if len(cluster) >= 7 and len(cluster) <= 10: score *= 2.0 # Sweet spot bonus
+            if len(cluster) == 9: score += 10 # Jackpot
+            
+            if score > max_score:
+                max_score, best_cluster = score, cluster
         
-        trace.append(f"Best cluster: {len(best_cluster)} stickers. Density score: {max_density}")
+        trace.append(f"Locked primary cluster of {len(best_cluster)} stickers at core (Score={max_score:.1f}).")
         
         if len(best_cluster) >= 4:
             cluster_pts = np.array([c['center'] for c in best_cluster])
