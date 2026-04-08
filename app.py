@@ -132,16 +132,29 @@ def auto_detect_cube_face(image_bytes, expected_center):
                 stks.append(c)
 
     if len(stks) >= 4:
-        # Use Rotated Bounding Box (minAreaRect) - MUCH better for tilted cubes
+        # Use Rotated Bounding Box (minAreaRect)
         combined = np.vstack(stks)
-        rot_rect = cv2.minAreaRect(combined)
-        box = cv2.boxPoints(rot_rect)
-        best_cnt = np.int0(box)
+        (cx, cy), (w, h), angle = cv2.minAreaRect(combined)
+        
+        # Manual calculation of box points: TL, TR, BR, BL
+        theta = angle * np.pi / 180.0
+        cos_t, sin_t = np.cos(theta), np.sin(theta)
+        
+        # 4 corners relative to center (unrotated)
+        # minAreaRect's angle is a bit tricky, but this standard rotation works
+        rect_pts = np.array([[-w/2, -h/2], [w/2, -h/2], [w/2, h/2], [-w/2, h/2]])
+        
+        # Apply rotation and translation to center
+        best_cnt = np.array([
+            [cx + p[0]*cos_t - p[1]*sin_t, cy + p[0]*sin_t + p[1]*cos_t] 
+            for p in rect_pts
+        ]).astype(np.int32)
     else:
         # Pass 2: Fallback to Canny + Dilation for low-contrast outlines
         edges = cv2.Canny(blurred, 20, 100)
         edges = cv2.dilate(edges, np.ones((3,3)))
         cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
         max_area = 0
         for cnt in cnts:
             area = cv2.contourArea(cnt)
