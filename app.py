@@ -23,11 +23,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Navigation via Map Clicks (Query Params)
-if "face_click" in st.query_params:
-    st.session_state.programmatic_face = st.query_params["face_click"]
-    st.query_params.clear()
-
 # Constants
 FACES = ['Up', 'Left', 'Front', 'Right', 'Back', 'Down']
 HEX_COLORS = {'White':'#f8f9fa','Red':'#ff4b4b','Green':'#09ab3b','Yellow':'#ffeb3b','Orange':'#ffa500','Blue':'#1e88e5'}
@@ -123,29 +118,26 @@ def push_history():
     st.session_state.history_index = len(st.session_state.history) - 1
 
 # --- 3. UI COMPONENTS ---
-def render_interactive_map(active_face):
-    """Renders a 2D clickable net of the cube with progress indicators"""
-    grid = {'Up':(0,1), 'Left':(1,0), 'Front':(1,1), 'Right':(1,2), 'Back':(1,3), 'Down':(2,1)}
-    html = '<div style="display:grid;grid-template-columns:repeat(4,50px);gap:6px;justify-content:center;padding:10px;background:#1e1e1e;border-radius:10px;border:1px solid #444;">'
-    for r in range(3):
-        for c in range(4):
-            f_k = next((f for f, p in grid.items() if p == (r, c)), None)
+def render_sidebar_map():
+    """Renders a 2D clickable net of the cube using native buttons for speed"""
+    grid = [
+        [None, 'Up', None, None],
+        ['Left', 'Front', 'Right', 'Back'],
+        [None, 'Down', None, None]
+    ]
+    active = st.session_state.programmatic_face
+    for row_idx, row in enumerate(grid):
+        cols = st.columns(4)
+        for col_idx, f_k in enumerate(row):
             if f_k:
-                # Progress Logic: A face is "touched" if it's not the default initialization
-                # For simplicity, we just check if it's the active one or a placeholder
-                is_active = (f_k == active_face)
-                style = "border:2px solid #00e5ff; box-shadow:0 0 10px #00e5ff;" if is_active else "border:1px solid #444;"
-                html += f"""<a href="/?face_click={f_k}" target="_self" style="text-decoration:none;">
-                    <div style="text-align:center; {style} border-radius:4px; padding:2px; background:rgba(255,255,255,0.02);">
-                        <div style="font-size:9px; color:{'#00e5ff' if is_active else '#888'}; font-weight:bold;">{f_k[0]}</div>
-                        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1px;">"""
-                for i, clr in enumerate(st.session_state.cube_state[f_k]):
-                    display_color = clr if i != 4 else CENTER_COLORS[f_k]
-                    html += f'<div style="width:12px;height:12px;background:{HEX_COLORS[display_color]}; border-radius:1px;"></div>'
-                html += '</div></div></a>'
-            else: html += '<div></div>'
-    html += '</div>'
-    return html
+                is_active = (f_k == active)
+                # Dynamic Pointer logic
+                label = f"☞{f_k[0]}" if is_active else f_k[0]
+                # Button color logic via emoji prefix
+                emoji = COLOR_EMOJIS[CENTER_COLORS[f_k]]
+                if cols[col_idx].button(f"{emoji}\n{label}", key=f"nav_{f_k}", use_container_width=True):
+                    st.session_state.programmatic_face = f_k
+                    st.rerun()
 
 def render_3d_player(solution):
     """Embeds the Twisty Player for solution visualization"""
@@ -171,7 +163,7 @@ with st.sidebar:
     st.divider()
     if app_mode == "📸 Scan & Solve":
         st.markdown("### 🗺️ Context Map")
-        st.markdown(render_interactive_map(st.session_state.programmatic_face), unsafe_allow_html=True)
+        render_sidebar_map()
         
         st.divider()
         with st.expander("🎓 Beginner Academy", expanded=False):
@@ -214,7 +206,7 @@ if app_mode == "📸 Scan & Solve":
             st.session_state.programmatic_face = FACES[(FACES.index(curr)-1)%6]; st.rerun()
     with h2:
         face_emoji = COLOR_EMOJIS[CENTER_COLORS[curr]]
-        st.markdown(f"<h2 style='text-align:center; color:#00e5ff;'>{face_emoji} Editing: {curr} Face</h2>", unsafe_allow_html=True)
+        st.markdown(f"<h2 style='text-align:center; color:#00e5ff;'>☞ {face_emoji} {curr} ☜</h2>", unsafe_allow_html=True)
     with h3:
         if st.button("Next ➡️", use_container_width=True):
             st.session_state.programmatic_face = FACES[(FACES.index(curr)+1)%6]; st.rerun()
