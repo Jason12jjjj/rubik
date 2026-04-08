@@ -4,22 +4,57 @@ import cv2
 from rubiks_core import validate_cube_state, solve_cube
 
 # --- 1. SYSTEM CONFIG ---
-st.set_page_config(page_title="Manual Rubik's Solver", page_icon="🧊", layout="wide")
+st.set_page_config(page_title="Pro Rubik's Solver", page_icon="🧊", layout="wide")
 
-# Custom CSS for Premium Design
+# Custom CSS for Premium Glassmorphism Look
 st.markdown("""
 <style>
-    /* Selected Color Glow Effect */
-    .stButton > button[aria-pressed="true"], .active-color {
-        border: 2px solid #00e5ff !important;
-        box-shadow: 0 0 15px rgba(0, 229, 255, 0.6) !important;
-        transform: scale(1.05);
+    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap');
+    
+    html, body, [data-testid="stAppViewContainer"] {
+        font-family: 'Outfit', sans-serif;
+        background: radial-gradient(circle at top right, #0a192f, #020c1b);
+        color: #e6f1ff;
     }
-    /* Smooth transitions */
-    .stButton > button { transition: all 0.2s ease; }
-    /* Inventory Alerts */
-    .inventory-warn { color: #ffa500; font-weight: bold; }
-    .inventory-err { color: #ff4b4b; font-weight: bold; }
+
+    /* Glass Panels */
+    .glass-panel {
+        background: rgba(255, 255, 255, 0.03);
+        backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 16px;
+        padding: 24px;
+        margin-bottom: 20px;
+    }
+
+    /* Button Styling & Animations */
+    .stButton > button {
+        border-radius: 10px !important;
+        border: 1px solid rgba(0, 229, 255, 0.3) !important;
+        background: rgba(0, 229, 255, 0.05) !important;
+        transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) !important;
+    }
+    
+    .stButton > button:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 8px 15px rgba(0, 229, 255, 0.2) !important;
+        border-color: #00e5ff !important;
+        background: rgba(0, 229, 255, 0.15) !important;
+    }
+
+    /* Palette Selection Indicator */
+    .stButton > button[aria-pressed="true"] {
+        border: 2px solid #00e5ff !important;
+        box-shadow: 0 0 20px rgba(0, 229, 255, 0.4) !important;
+    }
+
+    .inventory-card {
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 8px;
+        padding: 8px;
+        text-align: center;
+        border: 1px solid rgba(255,255,255,0.05);
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -42,7 +77,6 @@ def run_manual_grid_extract(image_bytes, expected_center):
     img = cv2.imdecode(np.asarray(bytearray(image_bytes.read()), dtype=np.uint8), 1)
     if img is None: return None, None, False
     h, w = img.shape[:2]
-    # Sample from the center area (0.7 scale)
     gs = int(min(h, w) * 0.7)
     sx, sy = (w - gs) // 2, (h - gs) // 2
     warped = cv2.resize(img[sy:sy+gs, sx:sx+gs], (300, 300))
@@ -56,7 +90,6 @@ def run_manual_grid_extract(image_bytes, expected_center):
     for r in range(3):
         for c in range(3):
             tx, ty = int((c+0.5)*100), int((r+0.5)*100)
-            # Saturation Centroid Refinement
             y1, y2, x1, x2 = max(0,ty-35), min(300,ty+35), max(0,tx-35), min(300,tx+35)
             roi_sat = sat_w[y1:y2, x1:x2]
             moms = cv2.moments(roi_sat)
@@ -65,7 +98,6 @@ def run_manual_grid_extract(image_bytes, expected_center):
                 sx_l, sy_l = x1 + int(moms["m10"]/moms["m00"]), y1 + int(moms["m01"]/moms["m00"])
                 if np.sqrt((sx_l-tx)**2 + (sy_l-ty)**2) < 30: fx, fy = sx_l, sy_l
             
-            # Eroded ROI Sampling (User Suggested logic)
             roi_raw = warped[max(0,fy-8):min(300,fy+8), max(0,fx-8):min(300,fx+8)]
             if roi_raw.size > 0:
                 hr, wr = roi_raw.shape[:2]
@@ -77,13 +109,9 @@ def run_manual_grid_extract(image_bytes, expected_center):
             min_d, best_c = 999.0, 'White'
             for name, (hs,ss,vs) in std_colors.items():
                 t_lab = cv2.cvtColor(cv2.cvtColor(np.uint8([[[hs,ss,vs]]]), cv2.COLOR_HSV2BGR), cv2.COLOR_BGR2LAB)[0][0]
-                # High-precision LAB coefficients from snippet
                 dV = np.sqrt(0.1*(float(lab[0])-t_lab[0])**2 + 2.4*(float(lab[1])-t_lab[1])**2 + 2.4*(float(lab[2])-t_lab[2])**2)
                 if dV < min_d: min_d, best_c = dV, name
             detected[r*3+c] = best_c
-            cv2.circle(debug_view, (fx, fy), 12, (255,255,255), 2)
-            cv2.putText(debug_view, best_c[0], (fx-5, fy+5), 0, 0.4, (255,255,255), 2)
-            
     detected[4] = expected_center
     return detected, debug_view, True
 
@@ -119,28 +147,22 @@ def push_history():
 
 # --- 3. UI COMPONENTS ---
 def render_sidebar_map():
-    """Renders a 2D clickable net of the cube using native buttons for speed"""
-    grid = [
-        [None, 'Up', None, None],
-        ['Left', 'Front', 'Right', 'Back'],
-        [None, 'Down', None, None]
-    ]
+    """Renders a 2D clickable net with glass styling"""
+    grid = [[None, 'Up', None, None], ['Left', 'Front', 'Right', 'Back'], [None, 'Down', None, None]]
     active = st.session_state.programmatic_face
-    for row_idx, row in enumerate(grid):
+    for row in grid:
         cols = st.columns(4)
-        for col_idx, f_k in enumerate(row):
+        for i, f_k in enumerate(row):
             if f_k:
                 is_active = (f_k == active)
-                # Dynamic Pointer logic
                 label = f"☞{f_k[0]}" if is_active else f_k[0]
-                # Button color logic via emoji prefix
-                emoji = COLOR_EMOJIS[CENTER_COLORS[f_k]]
-                if cols[col_idx].button(f"{emoji}\n{label}", key=f"nav_{f_k}", use_container_width=True):
+                if cols[i].button(f"{COLOR_EMOJIS[CENTER_COLORS[f_k]]}\n{label}", key=f"nav_{f_k}", use_container_width=True):
                     st.session_state.programmatic_face = f_k
+                    st.session_state.selected_color = CENTER_COLORS[f_k]
                     st.rerun()
 
 def render_3d_player(solution):
-    """Embeds the Twisty Player for solution visualization"""
+    """Embeds the Twisty Player with glass frame"""
     def inv_alg(s):
         r = []
         for m in reversed(s.split()):
@@ -149,11 +171,11 @@ def render_3d_player(solution):
             else: r.append(m+"'")
         return " ".join(r)
     speed = st.session_state.get('solve_speed', 1.0)
-    html = f"""<div style="background:#000; border:1px solid #00e5ff; border-radius:15px; padding:20px; box-shadow:0 0 20px rgba(0,229,255,0.2);">
+    html = f"""<div style="background:rgba(0,0,0,0.4); backdrop-filter:blur(20px); border:1px solid rgba(0,229,255,0.3); border-radius:20px; padding:20px; box-shadow:0 15px 35px rgba(0,0,0,0.5);">
         <script src="https://cubing.net" type="module"></script>
-        <twisty-player experimental-setup-alg="{inv_alg(solution)}" alg="{solution}" background="none" tempo-scale="{speed}" control-panel="bottom-row" style="width:100%; height:400px;"></twisty-player>
+        <twisty-player experimental-setup-alg="{inv_alg(solution)}" alg="{solution}" background="none" tempo-scale="{speed}" control-panel="bottom-row" style="width:100%; height:420px;"></twisty-player>
     </div>"""
-    components.html(html, height=450)
+    components.html(html, height=480)
 
 # --- 4. SIDEBAR NAVIGATION ---
 with st.sidebar:
@@ -166,28 +188,18 @@ with st.sidebar:
         render_sidebar_map()
         
         st.divider()
-        with st.expander("🎓 Beginner Academy", expanded=False):
-            tab1, tab2, tab3 = st.tabs(["Steps 1-2", "Steps 3-4", "Algs"])
-            with tab1:
-                st.markdown("**Step 1: The White Cross**")
-                st.caption("Daisy around yellow, then flip to white.")
-                st.code("Sexy: R U R' U'", language="markdown")
-            with tab2:
-                st.markdown("**Step 3: Mid-layer**")
-                st.code("U R U' R' U' F' U F", language="markdown")
-                st.markdown("**Step 4: Top Cross**")
-                st.code("F R U R' U' F'", language="markdown")
-            with tab3:
-                st.markdown("**Sune:** R U R' U R U2 R'")
-                st.markdown("**Niklas:** U R U' L' U R' U' L")
-
-        st.divider()
         st.markdown("### 📊 Inventory Check")
         all_stickers = [s for f in FACES for s in st.session_state.cube_state[f]]
         counts = {c: all_stickers.count(c) for c in HEX_COLORS.keys()}
         cols = st.columns(3)
         for i, name in enumerate(HEX_COLORS.keys()):
-            cols[i%3].markdown(f"{COLOR_EMOJIS[name]} `{counts[name]}/9`")
+            warn_class = "inventory-err" if counts[name] != 9 else ""
+            cols[i%3].markdown(f"""
+                <div class="inventory-card">
+                    <div style="font-size:20px;">{COLOR_EMOJIS[name]}</div>
+                    <div class="{warn_class}" style="font-size:14px;">{counts[name]}/9</div>
+                </div>
+            """, unsafe_allow_html=True)
 
         st.divider()
         if st.button("🗑️ Reset All Colors", use_container_width=True):
@@ -197,43 +209,34 @@ with st.sidebar:
 # --- 5. MAIN INTERFACE ---
 if app_mode == "📸 Scan & Solve":
     curr = st.session_state.programmatic_face
-    st.title("🧊 Pro Rubik's Solver")
-
-    # Face Switching Header
+    # Main Header with pointer
     h1, h2, h3 = st.columns([1,3,1])
     with h1: 
         if st.button("⬅️ Prev", use_container_width=True):
-            st.session_state.programmatic_face = FACES[(FACES.index(curr)-1)%6]; st.rerun()
+            prev_face = FACES[(FACES.index(curr)-1)%6]
+            st.session_state.programmatic_face = prev_face
+            st.session_state.selected_color = CENTER_COLORS[prev_face]
+            st.rerun()
     with h2:
         face_emoji = COLOR_EMOJIS[CENTER_COLORS[curr]]
-        st.markdown(f"<h2 style='text-align:center; color:#00e5ff;'>☞ {face_emoji} {curr} ☜</h2>", unsafe_allow_html=True)
+        st.markdown(f"<h2 style='text-align:center; color:#00e5ff; margin-top:0;'>☞ {face_emoji} {curr} ☜</h2>", unsafe_allow_html=True)
     with h3:
         if st.button("Next ➡️", use_container_width=True):
-            st.session_state.programmatic_face = FACES[(FACES.index(curr)+1)%6]; st.rerun()
-
-    # UNDO / REDO CONTROLS
-    u1, u2, u3 = st.columns([1, 1, 4])
-    with u1:
-        if st.button("⏪ Undo", disabled=st.session_state.history_index <= 0, use_container_width=True):
-            st.session_state.history_index -= 1
-            st.session_state.cube_state = json.loads(st.session_state.history[st.session_state.history_index])
-            st.rerun()
-    with u2:
-        if st.button("Redo ⏩", disabled=st.session_state.history_index >= len(st.session_state.history)-1, use_container_width=True):
-            st.session_state.history_index += 1
-            st.session_state.cube_state = json.loads(st.session_state.history[st.session_state.history_index])
+            next_face = FACES[(FACES.index(curr)+1)%6]
+            st.session_state.programmatic_face = next_face
+            st.session_state.selected_color = CENTER_COLORS[next_face]
             st.rerun()
 
-    st.info(f"💡 Select a color from the Palette then click the squares to fill. Center is fixed to **{CENTER_COLORS[curr]}**.")
-
-    c_edit, c_sol = st.columns([1, 1])
+    # Layout with glass panels
+    c_edit, c_sol = st.columns([1, 1], gap="large")
 
     with c_edit:
+        st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
         st.markdown("#### 🎨 Color Palette")
         pal_cols = st.columns(6)
         for i, color_name in enumerate(HEX_COLORS.keys()):
-            is_selected = st.session_state.selected_color == color_name
-            btn_label = f"{COLOR_EMOJIS[color_name]} {'•' if is_selected else ''}"
+            is_selected = (st.session_state.selected_color == color_name)
+            btn_label = f"☞{COLOR_EMOJIS[color_name]}" if is_selected else f"{COLOR_EMOJIS[color_name]}"
             if pal_cols[i].button(btn_label, key=f"pal_{color_name}", use_container_width=True):
                 st.session_state.selected_color = color_name
                 st.rerun()
@@ -245,7 +248,7 @@ if app_mode == "📸 Scan & Solve":
             st.session_state.last_solution = None
             push_history()
 
-        # Center color enforcement before rendering
+        # Center color enforcement
         if st.session_state.cube_state[curr][4] != CENTER_COLORS[curr]:
             st.session_state.cube_state[curr][4] = CENTER_COLORS[curr]
 
@@ -254,95 +257,123 @@ if app_mode == "📸 Scan & Solve":
             for c in range(3):
                 idx = r*3 + c
                 color_val = st.session_state.cube_state[curr][idx]
-                is_active = (idx != 4)
-                if not is_active:
+                if idx == 4:
                     rows[c].button(f"🔒\n{COLOR_EMOJIS[CENTER_COLORS[curr]]}", disabled=True, use_container_width=True)
                 else:
                     rows[c].button(f"{COLOR_EMOJIS[color_val]}\n{color_val}", key=f"btn_{curr}_{idx}", on_click=paint_color, args=(curr, idx), use_container_width=True)
 
         st.divider()
-        col_act1, col_act2 = st.columns(2)
+        col_act1, col_act2, col_act3 = st.columns([1, 1, 1])
         with col_act1:
-            if st.button("🧹 Reset This Face", use_container_width=True):
+            if st.button("🧹 Reset Face", use_container_width=True):
                 st.session_state.cube_state[curr] = (['White']*4 + [CENTER_COLORS[curr]] + ['White']*4)
                 push_history(); st.rerun()
         with col_act2:
-            st.toast(f"📍 Editing: {curr} Face")
+            if st.button("🪣 Paint Remaining", use_container_width=True):
+                cur_c = st.session_state.selected_color
+                st.session_state.cube_state[curr] = ([cur_c]*4 + [CENTER_COLORS[curr]] + [cur_c]*4)
+                push_history(); st.rerun()
+        with col_act3:
+             st.toast(f"📍 Context: {curr}")
 
         st.divider()
         st.markdown("#### 📂 Photo Assist")
-        up_img = st.file_uploader("Upload face photo", type=['jpg', 'png', 'jpeg'], key=f"up_{curr}", label_visibility="collapsed")
+        up_img = st.file_uploader("Upload reference", type=['jpg', 'png', 'jpeg'], key=f"up_{curr}", label_visibility="collapsed")
         if up_img:
-            st.image(up_img, caption="Reference Photo", use_container_width=True)
+            st.image(up_img, use_container_width=True)
             if st.button(f"📸 Scan {curr} Face", type="primary", use_container_width=True):
-                with st.spinner("Processing..."):
+                with st.spinner("Analyzing..."):
                     d, db, ok = run_manual_grid_extract(up_img, CENTER_COLORS[curr])
                     if ok:
                         st.session_state.cube_state[curr] = d
                         push_history()
-                        st.success("✨ Scanned! Advancing...")
-                        # Auto-Advance Logic: Find next un-scanned face or just next in sequence
-                        next_idx = (FACES.index(curr) + 1) % 6
-                        st.session_state.programmatic_face = FACES[next_idx]
+                        st.session_state.programmatic_face = FACES[(FACES.index(curr)+1)%6]
                         st.rerun()
-                    else: st.error("❌ Scan Failed.")
+        st.markdown('</div>', unsafe_allow_html=True)
 
     with c_sol:
+        st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
         st.markdown("### 🚀 Solve Path")
+        
+        # --- Undo / Redo in Solve Panel ---
+        ux1, ux2 = st.columns(2)
+        with ux1:
+            if st.button("⏪ Undo Change", disabled=st.session_state.history_index <= 0, use_container_width=True):
+                st.session_state.history_index -= 1
+                st.session_state.cube_state = json.loads(st.session_state.history[st.session_state.history_index])
+                st.rerun()
+        with ux2:
+            if st.button("Redo Change ⏩", disabled=st.session_state.history_index >= len(st.session_state.history)-1, use_container_width=True):
+                st.session_state.history_index += 1
+                st.session_state.cube_state = json.loads(st.session_state.history[st.session_state.history_index])
+                st.rerun()
+
+        st.divider()
+
         # --- Predictive Diagnostics ---
         all_stk = [s for f in FACES for s in st.session_state.cube_state[f]]
         inv = {c: all_stk.count(c) for c in HEX_COLORS.keys()}
         errors = [f"{COLOR_EMOJIS[c]} {inv[c]}/9" for c in inv if inv[c] != 9]
         
-        is_ready = len(errors) == 0
-        btn_label = "CALCULATE PATH" if is_ready else "⚠️ CHECK COLORS"
+        is_ready = (len(errors) == 0)
+        btn_label = "CALCULATE PATH" if is_ready else "⚠️ CHECK INVENTORY"
         
         if st.button(btn_label, type="primary" if is_ready else "secondary", use_container_width=True):
             if not is_ready:
-                st.warning(f"Inventory Mismatch: {', '.join(errors)}")
+                st.warning(f"Mismatch: {', '.join(errors)}")
             else:
                 with st.spinner("Solving..."):
                     ok, msg = validate_cube_state(st.session_state.cube_state)
                     if ok: st.session_state.last_solution = solve_cube(st.session_state.cube_state)
                     else: st.error(f"❌ {msg}")
         
-        if not is_ready:
-            st.caption("Please ensure all colors have exactly 9 stickers.")
-        
         if st.session_state.last_solution:
             sol = st.session_state.last_solution
             if sol == "!IMPOSSIBLE_STATE!":
-                st.error("⚠️ IMPOSSIBLE: Check face orientations.")
+                st.error("⚠️ IMPOSSIBLE: Check center orientation.")
             else:
                 st.success(f"✅ Route: {sol}")
-                st.markdown("#### 📺 3D Player Control")
+                st.markdown("#### 📺 3D Player")
                 s1, s2, s3 = st.columns(3)
                 if s1.button("🐢 0.5x", use_container_width=True): st.session_state.solve_speed = 0.5
                 if s2.button("🏃 1.0x", use_container_width=True): st.session_state.solve_speed = 1.0
                 if s3.button("🚀 2.0x", use_container_width=True): st.session_state.solve_speed = 2.0
-                st.caption(f"Current Speed: {st.session_state.solve_speed}x")
                 render_3d_player(sol)
+        st.markdown('</div>', unsafe_allow_html=True)
 
 elif app_mode == "⚙️ Tune Colors":
+    st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
     st.title("⚙️ Color Calibration")
-    st.info("💡 Upload a photo of a single face and click 'Auto-Calibrate' to sync sensors with your lighting.")
+    st.info("💡 Synchronize sensors with your specific lighting environments.")
     
-    c_cal = st.radio("Target Color:", list(HEX_COLORS.keys()), horizontal=True, format_func=lambda x: f"{COLOR_EMOJIS[x]} {x}")
-    cal_buf = st.file_uploader("Upload Calibration Photo", type=['jpg', 'png', 'jpeg'], key="cal_up")
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        c_cal = st.radio("Target Color:", list(HEX_COLORS.keys()), horizontal=True, format_func=lambda x: f"{COLOR_EMOJIS[x]} {x}")
+        cal_buf = st.file_uploader("Upload Calibration Photo", type=['jpg', 'png', 'jpeg'], key="cal_up")
     
     if cal_buf:
         img_cal = cv2.imdecode(np.asarray(bytearray(cal_buf.read()), dtype=np.uint8), 1)
         if img_cal is not None:
-            st.image(cv2.cvtColor(img_cal, cv2.COLOR_BGR2RGB), caption="Calibration Source", use_container_width=True)
-            if st.button(f"🎯 Auto-Calibrate {c_cal} from Image Center", type="primary", use_container_width=True):
+            with col2:
+                st.image(cv2.cvtColor(img_cal, cv2.COLOR_BGR2RGB), use_container_width=True)
+            if st.button(f"🎯 Auto-Calibrate {c_cal}", type="primary", use_container_width=True):
                 h, w = img_cal.shape[:2]
                 roi = img_cal[h//2-15:h//2+15, w//2-15:w//2+15]
                 avg_bgr = np.median(roi, axis=(0,1)).astype(np.uint8)
                 hsv_val = cv2.cvtColor(np.uint8([[[avg_bgr[0],avg_bgr[1],avg_bgr[0]]]]), cv2.COLOR_BGR2HSV)[0][0]
                 st.session_state.custom_std_colors[c_cal] = [int(hsv_val[0]), int(hsv_val[1]), int(hsv_val[2])]
                 with open(CALIB_FILE, 'w') as f: json.dump(st.session_state.custom_std_colors, f)
-                st.success(f"✅ Calibrated {c_cal} to HSV: {hsv_val}")
+                st.success(f"✅ Calibrated {c_cal}!")
                 st.rerun()
+
+    st.divider()
+    with st.expander("📜 Active Profile"):
+        st.json(st.session_state.custom_std_colors)
+        if st.button("🗑️ Reset Profile", use_container_width=True):
+            st.session_state.custom_std_colors = {}
+            if os.path.exists(CALIB_FILE): os.remove(CALIB_FILE)
+            st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # Footer info
 st.markdown("---")
