@@ -108,44 +108,60 @@ if not st.session_state.get('auto_detect', True):
 # ─────────────────────────────────────────────────────────────────────────────
 def auto_detect_cube_region(img):
     h_img, w_img = img.shape[:2]
-    # 允許魔方在畫面中佔比縮小到 15%
     min_area = (min(h_img, w_img) * 0.15) ** 2 
     max_area = (min(h_img, w_img) * 0.95) ** 2
 
     k_size = max(5, int(min(w_img, h_img) * 0.015))
     k_size = k_size if k_size % 2 != 0 else k_size + 1 
 
+    # 🌟 預設錯誤訊息
+    fail_reason = "Background is too messy or lighting is too dark. AI couldn't find any square shapes."
+
     def score_contours(cnts):
+        nonlocal fail_reason
         best = None
         best_score = 0
+        
+        # 🌟 從畫面中最大的物件開始檢查，這樣 AI 的抱怨才會準確
+        cnts = sorted(cnts, key=cv2.contourArea, reverse=True)
+        
         for cnt in cnts:
             area = cv2.contourArea(cnt)
-            if area < min_area or area > max_area:
+            if area < min_area:
+                if best is None and fail_reason.startswith("Background"):
+                    fail_reason = "The cube is too small or too far away. Move the camera closer."
+                continue
+            if area > max_area:
+                if best is None: fail_reason = "The cube is too close! Move the camera back."
                 continue
 
             peri = cv2.arcLength(cnt, True)
             approx = cv2.approxPolyDP(cnt, 0.05 * peri, True)
             x, y, w, bh = cv2.boundingRect(cnt)
-
             aspect = min(w, bh) / max(w, bh)
+            
             if aspect < 0.50:
+                if best is None: fail_reason = "Severe tilt detected. Please hold the camera parallel to the cube face."
                 continue
 
             hull = cv2.convexHull(cnt)
             hull_area = cv2.contourArea(hull)
             solidity = area / float(hull_area) if hull_area > 0 else 0
             if solidity < 0.85:
+                if best is None: fail_reason = "Fingers or shadows are blocking the face, or the cube is not a solid square."
                 continue
 
             cx = x + w / 2.0
             cy = y + bh / 2.0
             dist_to_center = ((cx - w_img / 2.0) ** 2 + (cy - h_img / 2.0) ** 2) ** 0.5
-            max_dist = ((w_img / 2.0) ** 2 + (h_img / 2.0) ** 2) ** 0.5
-            center_weight = max(0.1, 1.0 - (dist_to_center / max_dist))
+            if dist_to_center > min(w_img, h_img) * 0.45:
+                if best is None: fail_reason = "The cube is not centered. Move it to the middle of the frame."
+                continue
 
             shape_bonus = 5.0 if len(approx) == 4 else (2.0 if len(approx) in [5, 6, 7, 8] else 0.5)
             side = int(min(w, bh) * 0.90) 
-
+            
+            center_weight = max(0.1, 1.0 - (dist_to_center / ((w_img**2 + h_img**2)**0.5)))
             score = area * aspect * shape_bonus * center_weight * (solidity ** 2)
 
             if score > best_score:
@@ -167,7 +183,8 @@ def auto_detect_cube_region(img):
     
     best_region = score_contours(cnts_edge)
     if best_region is not None:
-        return best_region
+        # 🌟 成功時回傳座標與成功訊息
+        return best_region, "Success"
 
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     mask_sat = cv2.inRange(hsv, (0, 30, 30), (180, 255, 255))
@@ -175,7 +192,9 @@ def auto_detect_cube_region(img):
     clean = cv2.morphologyEx(clean, cv2.MORPH_OPEN, kernel_edge, iterations=2)
     cnts, _ = cv2.findContours(clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    return score_contours(cnts)
+    best_region_2 = score_contours(cnts)
+    # 🌟 失敗時回傳 None 與診斷訊息！
+    return best_region_2, fail_reason
 
 def get_calibrated_colors():
     std_colors = {
@@ -239,12 +258,16 @@ def extract_colors_from_image(image_bytes, expected_center):
     debug_img    = img.copy()
 
     region = None
+    fail_msg = "Unknown Error"
+    
     if st.session_state.get('auto_detect', True):
-        region = auto_detect_cube_region(img)
+        # 🌟 接收 AI 傳來的座標與失敗原因
+        region, fail_msg = auto_detect_cube_region(img)
 
     if region is None:
         if st.session_state.get('auto_detect', True):
-            return None, None, "not_detected"
+            # 🌟 如果失敗，我們把 fail_msg 放在第二個位子傳遞給網頁 UI
+            return None, fail_msg, "not_detected"
         else:
             grid_scale = st.session_state.get('cube_size', 50)
             grid_size  = int(min(h_img, w_img) * (grid_scale / 100.0))
