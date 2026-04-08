@@ -137,27 +137,50 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
     best_cnt = None
     pass_info = f"Found {len(candidates)} features."
     
-    # 💎 Grid Discovery: Find the best 3x3 cluster
+    # 💎 Grid Discovery: Find the dense cluster of 9 stickers
     if len(candidates) >= 4:
-        # Sort candidates to find clusters (naive spatial clustering)
-        # We look for a group that forms a quadrilateral
-        all_pts = np.array([c['center'] for c in candidates])
-        hull = cv2.convexHull(all_pts)
-        peri = cv2.arcLength(hull, True)
-        approx = cv2.approxPolyDP(hull, 0.04 * peri, True)
+        # 1. Dist Matrix & Clustering (Simple Radius-based logic)
+        best_cluster = []
+        max_density = 0
         
-        if len(approx) == 4:
-            area = cv2.contourArea(approx)
-            if (work_h*work_w * 0.005) < area < (work_h*work_w * 0.85):
+        # Calculate avg candidate width for distance thresholding
+        avg_w = np.mean([np.sqrt(c['area']) for c in candidates])
+        threshold_dist = avg_w * 2.5 # Max distance to be considered a 'neighbor'
+
+        pts = np.array([c['center'] for c in candidates])
+        for i in range(len(candidates)):
+            # Find neighbors for candidate i
+            cluster = [candidates[i]]
+            for j in range(len(candidates)):
+                if i == j: continue
+                d = np.sqrt(np.sum((pts[i] - pts[j])**2))
+                if d < threshold_dist: cluster.append(candidates[j])
+            
+            # Density Score: Bonus for being close to 9
+            score = len(cluster)
+            if score == 9: score += 10 # Strong signal
+            
+            if score > max_density:
+                max_density = score
+                best_cluster = cluster
+
+        if len(best_cluster) >= 4:
+            cluster_pts = np.array([c['center'] for c in best_cluster])
+            hull = cv2.convexHull(cluster_pts)
+            peri = cv2.arcLength(hull, True)
+            approx = cv2.approxPolyDP(hull, 0.04 * peri, True)
+            
+            area = cv2.contourArea(cluster_pts) if len(cluster_pts) < 3 else cv2.contourArea(hull)
+            area_pct = (area / (work_h*work_w)) * 100
+            
+            if len(approx) == 4:
                 best_cnt = approx.reshape(4, 2)
-                pass_info = f"Grid Locked: {len(candidates)} features in area."
-        else:
-            # Fallback to largest bounding box of features
-            (cx, cy), (w, h), angle = cv2.minAreaRect(all_pts)
-            if (work_h*work_w * 0.005) < (w*h) < (work_h*work_w * 0.85):
+                pass_info = f"Cluster Locked: {len(best_cluster)} stks (Density={max_density})."
+            else:
+                (cx, cy), (w, h), angle = cv2.minAreaRect(cluster_pts)
                 mpts = cv2.boxPoints(((cx, cy), (w, h), angle))
                 best_cnt = np.int32(mpts)
-                pass_info = f"Grid Fallback: {len(candidates)} features."
+                pass_info = f"Cluster Fallback: {len(best_cluster)} stks (Area={area_pct:.1f}%)."
 
     # Final Fallback to Edge Detection if stickers are too faint
     if best_cnt is None:
