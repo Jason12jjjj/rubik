@@ -81,17 +81,38 @@ st.markdown("""
 <style>
     [data-testid="stCameraInput"] { position: relative; }
     [data-testid="stCameraInput"]::after { display: none !important; }
-    .stButton>button { border-radius: 8px; }
     
-    /* Make the clickable map links look like buttons */
-    .face-link {
-        text-decoration: none !important;
-        color: inherit !important;
-        display: block;
-        transition: transform 0.15s ease;
+    /* Camera Guide Overlay */
+    .camera-container {
+        position: relative;
+        width: 100%;
+        max-width: 500px;
+        margin: 0 auto;
     }
-    .face-link:hover {
-        transform: scale(1.05);
+    .camera-guide {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: 280px;
+        height: 280px;
+        border: 2px dashed rgba(255, 255, 255, 0.5);
+        border-radius: 12px;
+        pointer-events: none;
+        z-index: 10;
+        box-shadow: 0 0 0 1000px rgba(0, 0, 0, 0.3);
+    }
+    .camera-guide::before {
+        content: "CENTER CUBE HERE";
+        position: absolute;
+        top: -30px;
+        left: 50%;
+        transform: translateX(-50%);
+        color: white;
+        font-size: 12px;
+        font-weight: bold;
+        white-space: nowrap;
+        text-shadow: 1px 1px 2px black;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -173,38 +194,40 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
                 all_raw.append({'box':(x,y,w,h), 'status': "RED", 'center':(x+w//2, y+h//2)})
         return found
 
-    # Multi-Scale RETR_LIST (Transparent Scans)
-    t1 = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 13, 2)
-    c1 = process_contours(cv2.findContours(t1, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0])
-    
-    t2 = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 81, 2)
-    c2 = process_contours(cv2.findContours(t2, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0], tag="SILENT")
-    
-    # Deduplicate All Raw Candidates
-    c_raw = c1 + c2
-    if c_raw:
-        c_raw.sort(key=lambda x: x['area'], reverse=True)
-        for cand in c_raw:
+    # 🚀 ADAPTIVE SHUTTER LOOP: Try different adaptive thresholds to find best candidates
+    for ws in [13, 31, 61, 101, 151]:
+        thr = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, ws, 2)
+        c_found = process_contours(cv2.findContours(thr, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0], tag="SILENT" if ws > 13 else "")
+        
+        # Deduplicate and grow global candidates list
+        for cand in c_found:
             if not any(np.sqrt((cand['center'][0]-c['center'][0])**2 + (cand['center'][1]-c['center'][1])**2) < 15 for c in candidates):
                 candidates.append(cand)
+        
+        # Internal early exit: If we have > 9 firm candidates, we likely have enough
+        if len(candidates) >= 12: break
 
-    trace.append(f"Trace: Candidates Found={len(candidates)}")
+    trace.append(f"Trace: Final Candidates={len(candidates)} (from multi-scale scan)")
     if sharp < 25: trace.append("⚠️ WARNING: Image blurry. Hold steady.")
 
     # --- 3. CLUSTERING PHASE: BFS CONNECTIVITY ---
     if len(candidates) >= 4:
-        valid_areas = [c['area'] for c in candidates]
-        med_w = np.sqrt(np.median(valid_areas))
-        threshold_dist = med_w * 6.0
-        min_dist = med_w * 0.5
-        
+        # Cluster logic: Growth / Connected Components
         pts = np.array([c['center'] for c in candidates])
+        
+        # 📏 ROBUST SCALE: Use median to ignore tiny noise/glare
+        valid_areas = [c['area'] for c in candidates]
+        med_w = np.sqrt(np.median(valid_areas)) if valid_areas else 1.0
+        
+        threshold_dist = med_w * 6.5
+        min_dist = med_w * 0.55
+        
         visited = [False] * len(candidates)
         all_clusters = []
         
         for i in range(len(candidates)):
             if visited[i]: continue
-            curr_c_indices = [i]
+            curr_cluster = [i]
             queue = [i]
             visited[i] = True
             while queue:
@@ -214,35 +237,60 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
                         d = np.sqrt(np.sum((pts[u] - pts[v])**2))
                         if min_dist < d < threshold_dist:
                             visited[v] = True
-                            curr_c_indices.append(v)
+                            curr_cluster.append(v)
                             queue.append(v)
-            all_clusters.append([candidates[idx] for idx in curr_c_indices])
+            all_clusters.append([candidates[idx] for idx in curr_cluster])
         
+        max_score = 0.0
         for cluster in all_clusters:
             if len(cluster) < 4: continue
             
+            # 📐 Calculate Cluster Coverage (Physical size in image)
             c_pts = np.array([c['center'] for c in cluster])
             c_min_x, c_min_y = np.min(c_pts, axis=0)
             c_max_x, c_max_y = np.max(c_pts, axis=0)
-            curr_cov = ((c_max_x-c_min_x) * (c_max_y-c_min_y)) / (work_w * work_h)
-            if curr_cov < 0.01: continue
+            c_w, c_h = c_max_x - c_min_x, c_max_y - c_min_y
+            curr_coverage = (c_w * c_h) / (work_w * work_h)
             
-            # Regularity Scoring
-            all_d = []
+            if curr_coverage < 0.01: continue
+
+            # Regularity & Bucketing Score
+            reg_score = 1.0
+            all_dists = []
             for p_m in cluster:
-                d_to_o = sorted([np.sqrt((p_m['center'][0]-o['center'][0])**2 + (p_m['center'][1]-o['center'][1])**2) for o in cluster if o is not p_m])
-                if d_to_o: all_d.extend(d_to_o[:2])
-            reg_score = 1.0 / (1.0 + np.std(all_d) / (np.mean(all_d) + 1e-6)) if all_d else 0.5
+                px, py = p_m['center']
+                d_to_others = sorted([np.sqrt((px-o['center'][0])**2 + (py-o['center'][1])**2) for o in cluster if o is not p_m])
+                if d_to_others: all_dists.extend(d_to_others[:2])
             
-            score = (len(cluster)**2) * reg_score * (1.0 + curr_cov * 10)
+            if all_dists:
+                reg_score = 1.0 / (1.0 + np.std(all_dists) / (np.mean(all_dists) + 1e-6))
+
+            # 🧩 HYBRID ROW/COLUMN BUCKETING (User Suggestion)
+            grid_bonus = 1.0
+            if len(cluster) >= 7:
+                pts_sort_y = sorted(cluster, key=lambda x: x['center'][1])
+                rows = []
+                if pts_sort_y:
+                    curr_row = [pts_sort_y[0]]
+                    for k in range(1, len(pts_sort_y)):
+                        if pts_sort_y[k]['center'][1] - curr_row[-1]['center'][1] < med_w * 1.2:
+                            curr_row.append(pts_sort_y[k])
+                        else:
+                            rows.append(curr_row); curr_row = [pts_sort_y[k]]
+                    rows.append(curr_row)
+                if len(rows) == 3 and all(len(r) >= 2 for r in rows):
+                    grid_bonus = 2.0 # Huge bonus for stable row structure
+
+            score = (len(cluster)**2) * reg_score * grid_bonus * (1.0 + curr_coverage * 10)
             if 7 <= len(cluster) <= 10: score *= 5.0
-            if len(cluster) == 9: score += 50
+            if len(cluster) == 9: score += 100
             
             if score > max_score:
                 max_score, best_cluster = score, cluster
-                best_reg_score, cluster_coverage = reg_score, curr_cov
+                best_reg_score, cluster_coverage = reg_score, curr_coverage
 
-        trace.append(f"Locked Cluster: {len(best_cluster)} stks (Cov={cluster_coverage*100:.1f}%, Score={max_score:.1f})")
+        status_msg = f"Locked cluster: {len(best_cluster)} stks (Cov={cluster_coverage*100:.1f}%, Score={max_score:.1f})"
+        trace.append(status_msg)
 
     # Final Diagnostic Color Marking
     if show_diag:
@@ -312,9 +360,19 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
                     final_x, final_y, off = sx, sy, (sx-tx, sy-ty)
             
             refined_centers.append((final_x, final_y))
-            # Pick color in CIE-LAB
-            roi_lab = warped[max(0,final_y-6):min(300,final_y+6), max(0,final_x-6):min(300,final_x+6)]
-            bgr = np.median(roi_lab, axis=(0,1)).astype(np.uint8) if roi_lab.size > 0 else [0,0,0]
+            
+            # --- COLOR SAMPLING WITH EROSION (User Suggestion) ---
+            # Instead of a simple 12x12, we take a 16x16 and then keep only the central 8x8
+            # This is mathematically equivalent to 'Erosion' to avoid black sticker borders.
+            roi_raw = warped[max(0,final_y-8):min(300,final_y+8), max(0,final_x-8):min(300,final_x+8)]
+            if roi_raw.size > 0:
+                # Target the central core of the sticker (Eroded region)
+                h_r, w_r = roi_raw.shape[:2]
+                roi_eroded = roi_raw[h_r//4 : h_r - h_r//4, w_r//4 : w_r - w_r//4]
+                bgr = np.median(roi_eroded, axis=(0,1)).astype(np.uint8)
+            else:
+                bgr = [0,0,0]
+                
             lab = cv2.cvtColor(np.uint8([[[bgr[0],bgr[1],bgr[2]]]]), cv2.COLOR_BGR2LAB)[0][0]
             
             min_d, best_c, dists = 999.0, 'White', {}
@@ -339,7 +397,7 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
         cv2.putText(ar_overlay, detected[i][0], (px+10, py+10), 0, h_p/1200, (255,255,255), 2)
     
     detected[4] = expected_center # Protect center
-    return detected, debug_warped, f"Locked {len(best_cluster)} stks", diag_imgs, cv2.cvtColor(ar_overlay[pad:-pad, pad:-pad], cv2.COLOR_BGR2RGB), metrics, trace
+    return detected, debug_warped, f"Locked {len(best_cluster)} stks", diag_imgs, cv2.cvtColor(ar_overlay[pad:-pad, pad:-pad], cv2.COLOR_BGR2RGB), metrics, trace, bright, sharp
 
 def run_manual_grid_extract(image_bytes, expected_center, scale_percent):
     file_bytes = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
@@ -473,7 +531,14 @@ if app_mode == "📸 Scan & Solve":
         st.session_state.auto_detect = st.toggle("🤖 Auto-Detect", value=st.session_state.auto_detect)
         
         v = st.session_state.uploader_key_version
-        buf = st.camera_input("P", key=f"c_{v}") if imth == "📹 Live" else st.file_uploader("U", type=['jpg','png'], key=f"u_{v}")
+        
+        # Wrapped camera in a container for the CSS guide
+        if imth == "📹 Live":
+            st.markdown('<div class="camera-container"><div class="camera-guide"></div>', unsafe_allow_html=True)
+            buf = st.camera_input("P", key=f"c_{v}", label_visibility="collapsed")
+            st.markdown('</div>', unsafe_allow_html=True)
+        else:
+            buf = st.file_uploader("U", type=['jpg','png'], key=f"u_{v}")
         
         act = buf or (io.BytesIO(sh) if sh and imth == "📂 Upload" else None)
         if act:
@@ -487,8 +552,12 @@ if app_mode == "📸 Scan & Solve":
                 
                 if st.session_state.auto_detect:
                     res = auto_detect_cube_face(act, CENTER_COLORS[curr], show_diag=st.session_state.get('show_diag'))
-                    # Unpack 7 values: d, db, info, diags, track, metrics, trace
-                    d, db, info, diags, track, metrics, trace = res if len(res) == 7 else (None, None, "API Error", {}, None, None, ["Error: Index mismatch"])
+                    # Unpack 9 values: d, db, info, diags, track, metrics, trace, bright, sharp
+                    if len(res) == 9:
+                        d, db, info, diags, track, metrics, trace, bright, sharp = res
+                    else:
+                        d, db, info, diags, track, metrics, trace, bright, sharp = None, None, "API Error", {}, None, None, ["Error: Index mismatch"], 0, 0
+                    
                     success = (d is not None)
                     
                     if success:
@@ -496,6 +565,17 @@ if app_mode == "📸 Scan & Solve":
                         t_col, r_col = st.columns([1, 1])
                         with t_col: st.image(track, caption="🎯 Target Locked", use_container_width=True)
                         with r_col: st.image(db, caption="📸 Color Result", use_container_width=True)
+                        
+                        # --- 🚦 QUALITY BADGES (PROFEEDBACK) ---
+                        # Extract metrics from trace or results
+                        q1, q2 = st.columns(2)
+                        with q1:
+                            b_status = "🌕 Good" if bright > 75 else ("🌑 Too Dark" if bright < 50 else "🌥️ Low Light")
+                            st.write(f"**Brightness:** {bright:.0f} {b_status}")
+                        with q2:
+                            s_status = "✅ Sharp" if sharp > 40 else "🌫️ Blurry"
+                            st.write(f"**Sharpness:** {sharp:.0f} {s_status}")
+                        
                         st.success(msg_success)
                         
                         if st.session_state.get('show_diag'):
