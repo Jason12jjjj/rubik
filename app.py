@@ -141,12 +141,13 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
             area = cv2.contourArea(appp)
             area_pct = (area / total_area) * 100
             pass_info = f"Pass 1: {len(stks)} stks. Area={area_pct:.1f}%"
-            if (total_area * 0.02 < area < total_area * 0.80):
+            # Relaxed Area Limit: 0.5% to 80%
+            if (total_area * 0.005 < area < total_area * 0.85):
                 best_cnt = appp.reshape(4, 2)
         else:
             (cx, cy), (w, h), angle = cv2.minAreaRect(combined)
             area = w * h
-            if (total_area * 0.02 < area < total_area * 0.80):
+            if (total_area * 0.005 < area < total_area * 0.85):
                 theta = angle * np.pi / 180.0
                 cos_t, sin_t = np.cos(theta), np.sin(theta)
                 pts_rect = np.array([[-w/2, -h/2], [w/2, -h/2], [w/2, h/2], [-w/2, h/2]])
@@ -161,25 +162,42 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
         if show_diag: diag_imgs['Pass 2 (Edges)'] = edges
         cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         max_a = 0
-        p2_notes = "No edges"
+        p2_notes = "No edges found"
         for cnt in cnts:
             x, y, wc, hc = cv2.boundingRect(cnt)
-            if x < 8 or y < 8 or (x+wc) > (work_w-8) or (y+hc) > (work_h-8): 
-                p2_notes = "P2: Near border"; continue
+            # Relax border defense to 5px
+            if x < 5 or y < 5 or (x+wc) > (work_w-5) or (y+hc) > (work_h-5): 
+                continue
+            
             area = cv2.contourArea(cnt)
             area_pct = (area / total_area) * 100
-            if (total_area * 0.02) < area < (total_area * 0.80):
+            
+            # Record largest for diagnostics
+            if area > max_a: p2_notes = f"P2: Best candidate Area={area_pct:.1f}%"
+            
+            if (total_area * 0.005 < area < total_area * 0.85):
                 hull = cv2.convexHull(cnt)
                 appr = cv2.approxPolyDP(hull, 0.03 * cv2.arcLength(hull, True), True)
+                
+                # Success if 4 points OR fallback to minAreaRect for "blob" shapes
                 if len(appr) == 4:
                     _, (bw, bh), _ = cv2.minAreaRect(appr)
                     ratio = min(bw, bh) / max(bw, bh) if max(bw, bh) > 0 else 0
-                    p2_notes = f"P2: Area={area_pct:.1f}%, Ratio={ratio:.2f}"
-                    if area > max_a and ratio > 0.3:
+                    if area > max_a and ratio > 0.2:
                         max_a, best_cnt = area, appr.reshape(4, 2)
-                        pass_info = p2_notes
-            else:
-                if area_pct > 0.5: p2_notes = f"P2: Area {area_pct:.1f}% invalid"
+                        pass_info = f"P2: Quad match. Area={area_pct:.1f}%"
+                else:
+                    # BRUTE FORCE FALLBACK: Use minAreaRect for any cube-like candidate
+                    (mcx, mcy), (mw, mh), mangle = cv2.minAreaRect(cnt)
+                    mratio = min(mw, mh) / max(mw, mh) if max(mw, mh) > 0 else 0
+                    if area > max_a and mratio > 0.4:
+                        theta = mangle * np.pi / 180.0
+                        cos_t, sin_t = np.cos(theta), np.sin(theta)
+                        pw, ph = mw/2, mh/2
+                        mpts = np.array([[-pw, -ph], [pw, -ph], [pw, ph], [-pw, ph]])
+                        best_cnt = np.array([[mcx + p[0]*cos_t - p[1]*sin_t, mcy + p[0]*sin_t + p[1]*cos_t] for p in mpts]).astype(np.int32)
+                        max_a = area
+                        pass_info = f"P2: RotBox fallback. Area={area_pct:.1f}%"
         
         if best_cnt is None: pass_info = f"{pass_info} | {p2_notes}"
 
