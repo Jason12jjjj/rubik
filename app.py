@@ -109,7 +109,7 @@ if not st.session_state.get('auto_detect', True):
 def auto_detect_cube_region(img):
     h_img, w_img = img.shape[:2]
     min_area = (min(h_img, w_img) * 0.15) ** 2 
-    max_area = (min(h_img, w_img) * 0.95) ** 2
+    max_area = (min(h_img, w_img) * 0.99) ** 2
 
     k_size = max(5, int(min(w_img, h_img) * 0.015))
     k_size = k_size if k_size % 2 != 0 else k_size + 1 
