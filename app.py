@@ -137,34 +137,31 @@ def auto_detect_cube_face(image_bytes, expected_center):
         combined = np.vstack(stks)
         (cx, cy), (w, h), angle = cv2.minAreaRect(combined)
         
-        # Upper Bound Check: Reject if box covers > 85% of image
-        if (w * h) > total_area * 0.85:
-            return None, None, False
-            
-        # Manual calculation of box points: TL, TR, BR, BL
-        theta = angle * np.pi / 180.0
-        cos_t, sin_t = np.cos(theta), np.sin(theta)
-        
-        # 4 corners relative to center (unrotated)
-        # minAreaRect's angle is a bit tricky, but this standard rotation works
-        rect_pts = np.array([[-w/2, -h/2], [w/2, -h/2], [w/2, h/2], [-w/2, h/2]])
-        
-        # Apply rotation and translation to center
-        best_cnt = np.array([
-            [cx + p[0]*cos_t - p[1]*sin_t, cy + p[0]*sin_t + p[1]*cos_t] 
-            for p in rect_pts
-        ]).astype(np.int32)
-    else:
-        # Pass 2: Fallback to Canny + Dilation for low-contrast outlines
-        edges = cv2.Canny(blurred, 20, 100)
+        # Area Qualification Check
+        box_area = w * h
+        if (total_area * 0.10 < box_area < total_area * 0.60):
+            # Pass 1 Success: Manual calculation of box points
+            theta = angle * np.pi / 180.0
+            cos_t, sin_t = np.cos(theta), np.sin(theta)
+            rect_pts = np.array([[-w/2, -h/2], [w/2, -h/2], [w/2, h/2], [-w/2, h/2]])
+            best_cnt = np.array([
+                [cx + p[0]*cos_t - p[1]*sin_t, cy + p[0]*sin_t + p[1]*cos_t] 
+                for p in rect_pts
+            ]).astype(np.int32)
+        else:
+            # Area invalid, let it fall through to Pass 2 (Outline Detection)
+            best_cnt = None
+    
+    # Pass 2: Fallback to Canny + Dilation if Pass 1 found nothing or failed area check
+    if best_cnt is None:
         edges = cv2.dilate(edges, np.ones((3,3)))
         cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         max_area = 0
         for cnt in cnts:
             area = cv2.contourArea(cnt)
-            # Area Constraints: 20% < area < 85%
-            if (work_h*0.2)**2 < area < (total_area * 0.85):
+            # Pixel-Based Constraints: 10% < area < 60%
+            if (total_area * 0.10) < area < (total_area * 0.60):
                 peri = cv2.arcLength(cnt, True)
                 appr = cv2.approxPolyDP(cnt, 0.04 * peri, True)
                 if len(appr) == 4 and area > max_area:
@@ -211,8 +208,9 @@ def auto_detect_cube_face(image_bytes, expected_center):
             
             detected[r*3+c] = best_c
             cv2.circle(debug_warped, (cx, cy), 15, (255, 255, 255), 2)
-            cv2.putText(debug_warped, best_c, (cx-30, cy+40), 0, 0.45, (0,0,0), 3)
-            cv2.putText(debug_warped, best_c, (cx-30, cy+40), 0, 0.45, (255,255,255), 1)
+            # Smaller, thinner text to avoid 'full view overlap'
+            cv2.putText(debug_warped, best_c, (cx-25, cy+40), 0, 0.4, (0,0,0), 2)
+            cv2.putText(debug_warped, best_c, (cx-25, cy+40), 0, 0.4, (255,255,255), 1)
 
     detected[4] = expected_center
     return detected, debug_warped, True
