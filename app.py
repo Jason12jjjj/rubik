@@ -100,7 +100,7 @@ st.markdown("""
 def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
     file_bytes = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, 1)
-    if img is None: return None, None, False
+    if img is None: return None, None, "No Image Data", {}
     
     diag_imgs = {}
     
@@ -191,7 +191,9 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
                         max_area = area
                         best_cnt = appr.reshape(4, 2)
 
-    if best_cnt is None: return None, pass_info, False
+    if best_cnt is None: 
+        if "Pass 2" not in pass_info: pass_info = "Fail: No valid cube-like contours found in Pass 1 or 2."
+        return None, None, pass_info, diag_imgs
 
     # --- Perspective Warping ---
     # Convert points from 'work' size back to 'padded' size
@@ -236,7 +238,7 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
             cv2.putText(debug_warped, best_c, (cx-25, cy+40), 0, 0.4, (255,255,255), 1)
 
     detected[4] = expected_center
-    return detected, debug_warped, True
+    return detected, debug_warped, pass_info, diag_imgs
 
 def run_manual_grid_extract(image_bytes, expected_center, scale_percent):
     file_bytes = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
@@ -380,14 +382,21 @@ if app_mode == "📸 Scan & Solve":
                 
                 # BRANCH: Auto-Detect vs Manual Alignment
                 if st.session_state.auto_detect:
-                    d, db, res = auto_detect_cube_face(act, CENTER_COLORS[curr], show_diag=st.session_state.get('show_diag'))
-                    success = (res is not False)
-                    if st.session_state.get('show_diag'): st.write(f"🔬 Diag: {res}")
+                    d, db, info, diags = auto_detect_cube_face(act, CENTER_COLORS[curr], show_diag=st.session_state.get('show_diag'))
+                    success = (d is not None)
+                    
+                    if st.session_state.get('show_diag'):
+                        st.write(f"🔬 Diag: {info}")
+                        if diags:
+                            dcols = st.columns(len(diags))
+                            for i, (name, img) in enumerate(diags.items()):
+                                with dcols[i]: st.image(img, caption=name, use_container_width=True)
                     
                     msg_success = "✨ **I flattened the cube face!** Check the orientation and colors."
-                    msg_fail = "❌ Cube outline not found. Try to hold it flatter, or switch to Manual Mode (uncheck Auto-Detect) to use the fixed grid."
+                    msg_fail = f"❌ Cube not found. (Diag: {info})" if st.session_state.get('show_diag') else "❌ Cube outline not found. Try to hold it flatter, or switch to Manual Mode."
                 else:
                     d, db, success = run_manual_grid_extract(act, CENTER_COLORS[curr], st.session_state.cube_size)
+                    info = "Manual"
                     msg_success = "📐 **Manual Alignment Used.** I captured the colors inside the center grid."
                     msg_fail = "❌ Failed to read manual grid. Check your connection."
 
