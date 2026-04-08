@@ -85,12 +85,12 @@ st.markdown("""
     [data-testid="stCameraInput"] { position: relative; }
     [data-testid="stCameraInput"]::after { display: none !important; }
     
-    /* Camera Guide Overlay */
+    /* Camera Guide Overlay with 3x3 Grid */
     .camera-container {
         position: relative;
         display: flex;
         justify-content: center;
-        align-items: flex-start; /* Align to top to match video feed */
+        align-items: flex-start;
         width: 100%;
         max-width: 500px;
         margin: 0 auto;
@@ -98,25 +98,47 @@ st.markdown("""
     .camera-guide {
         position: absolute;
         top: 130px; 
-        width: 260px; /* Aligned with 60% sample area */
+        width: 260px;
         height: 260px;
-        border: 3px dashed #00e5ff; /* Cyan for high visibility */
+        border: 3px solid #00e5ff; /* Cyan Solid for better visibility */
         border-radius: 8px;
         pointer-events: none;
         z-index: 10;
         box-shadow: 0 0 0 1000px rgba(0, 0, 0, 0.4);
+        
+        /* Inner 3x3 Grid Silhouette */
+        background-image: 
+            linear-gradient(to right, rgba(0, 229, 255, 0.3) 1px, transparent 1px),
+            linear-gradient(to bottom, rgba(0, 229, 255, 0.3) 1px, transparent 1px);
+        background-size: 86.6px 86.6px; /* 260/3 */
+        
+        animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+        0% { border-color: rgba(0, 229, 255, 1); box-shadow: 0 0 0 1000px rgba(0, 0, 0, 0.4), 0 0 10px rgba(0, 229, 255, 0.2); }
+        50% { border-color: rgba(0, 229, 255, 0.5); box-shadow: 0 0 0 1000px rgba(0, 0, 0, 0.5), 0 0 20px rgba(0, 229, 255, 0.5); }
+        100% { border-color: rgba(0, 229, 255, 1); box-shadow: 0 0 0 1000px rgba(0, 0, 0, 0.4), 0 0 10px rgba(0, 229, 255, 0.2); }
     }
     .camera-guide::before {
-        content: "ALIGN CUBE HERE";
+        content: "PLACE CUBE FACE HERE";
         position: absolute;
-        top: -30px;
+        top: -35px;
         left: 0;
         width: 100%;
         text-align: center;
         color: #00e5ff;
         font-weight: bold;
-        font-size: 14px;
-        text-shadow: 0 0 5px rgba(0,0,0,1);
+        font-size: 16px;
+        text-shadow: 0 0 8px rgba(0,0,0,1);
+    }
+    /* Sample indicators */
+    .camera-guide::after {
+        content: "";
+        position: absolute;
+        top: 0; left: 0; width: 100%; height: 100%;
+        background-image: radial-gradient(rgba(0, 229, 255, 0.4) 2px, transparent 2px);
+        background-size: 86.6px 86.6px;
+        background-position: 43.3px 43.3px;
     }
 </style>
 """, unsafe_allow_html=True)
