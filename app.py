@@ -1,5 +1,5 @@
 # ==============================================================================
-# RUBIK'S CUBE SOLVER
+# RUBIK'S CUBE SOLVER - UX ENHANCED VERSION
 # ==============================================================================
 import io
 import os
@@ -40,9 +40,8 @@ if 'cube_state' not in st.session_state:
         st.session_state.cube_state[face] = default_face
 
 if 'processed_photos' not in st.session_state:
-    st.session_state.processed_photos = {}      # key: face name → last cache key
+    st.session_state.processed_photos = {}
 
-# FIX #5: Load custom colors from JSON file so it persists across server reboots
 if 'custom_std_colors' not in st.session_state:
     if os.path.exists(CALIB_FILE):
         try:
@@ -57,65 +56,48 @@ if 'cube_size' not in st.session_state:
     st.session_state.cube_size = 50
 
 if 'shared_face_images' not in st.session_state:
-    st.session_state.shared_face_images = {}    # key: face name → raw bytes
+    st.session_state.shared_face_images = {}
 
 if 'auto_detect' not in st.session_state:
     st.session_state.auto_detect = True
 
+if 'auto_advance' not in st.session_state:
+    st.session_state.auto_advance = True
+
 if 'last_solution' not in st.session_state:
     st.session_state.last_solution = None
 
-# FIX #2: Streamlit Native Component Key Versioning instead of JS hacks
 if 'uploader_key_version' not in st.session_state:
     st.session_state.uploader_key_version = 0
 
-# --- CSS: Overlay 3x3 grid on camera — only rendered in manual mode ---
-c_size = st.session_state.get('cube_size', 50)
+if 'programmatic_face' not in st.session_state:
+    st.session_state.programmatic_face = FACES[0]
 
+# --- CSS: Global Styles ---
 st.markdown("""
 <style>
+    /* Hide specific Streamlit camera input overlays */
     [data-testid="stCameraInput"] { position: relative; }
     [data-testid="stCameraInput"]::after { display: none !important; }
+    
+    /* Style for the interactive grid buttons */
+    .stButton>button {
+        border-radius: 8px;
+    }
+    
+    /* Make the 3x3 grid buttons more distinct */
+    div[data-testid="stVerticalBlock"] > div > div > div > button {
+        height: 60px !important;
+        font-size: 20px !important;
+    }
 </style>
 """, unsafe_allow_html=True)
-
-if not st.session_state.get('auto_detect', True):
-    st.markdown(f"""
-<style>
-    [data-testid="stCameraInput"]::after {{
-        content: "";
-        display: block !important;
-        position: absolute;
-        top: 50%; left: 50%;
-        transform: translate(-50%, -50%);
-        width: {c_size}%;
-        height: auto;
-        aspect-ratio: 1 / 1;
-        z-index: 999;
-        border: 4px solid rgba(0, 255, 0, 0.9);
-        pointer-events: none;
-        box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.3);
-        background-image:
-            linear-gradient(to right, transparent 33.33%, rgba(0,255,0,0.7) 33.33%, rgba(0,255,0,0.7) calc(33.33% + 2px), transparent calc(33.33% + 2px)),
-            linear-gradient(to right, transparent 66.66%, rgba(0,255,0,0.7) 66.66%, rgba(0,255,0,0.7) calc(66.66% + 2px), transparent calc(66.66% + 2px)),
-            linear-gradient(to bottom, transparent 33.33%, rgba(0,255,0,0.7) 33.33%, rgba(0,255,0,0.7) calc(33.33% + 2px), transparent calc(33.33% + 2px)),
-            linear-gradient(to bottom, transparent 66.66%, rgba(0,255,0,0.7) 66.66%, rgba(0,255,0,0.7) calc(66.66% + 2px), transparent calc(66.66% + 2px));
-    }}
-</style>
-""", unsafe_allow_html=True)
-
-
-def auto_advance(nf):
-    st.session_state.face_selector = nf
-    st.session_state.uploader_key_version += 1
-
 
 # ─────────────────────────────────────────────────────────────────────────────
-# COMPUTER VISION — Auto-Detect Rubik's Face
+# COMPUTER VISION
 # ─────────────────────────────────────────────────────────────────────────────
 def auto_detect_cube_region(img):
     h_img, w_img = img.shape[:2]
-    # Restrict to realistic sizes
     min_area = (min(h_img, w_img) * 0.25) ** 2
     max_area = (min(h_img, w_img) * 0.95) ** 2
 
@@ -124,701 +106,302 @@ def auto_detect_cube_region(img):
         best_score = 0
         for cnt in cnts:
             area = cv2.contourArea(cnt)
-            if area < min_area or area > max_area:
-                continue
-
+            if area < min_area or area > max_area: continue
             peri = cv2.arcLength(cnt, True)
             approx = cv2.approxPolyDP(cnt, 0.04 * peri, True)
             x, y, w, bh = cv2.boundingRect(cnt)
-
-            # A cube face must be roughly a perfect square. Force tight aspect ratio.
             aspect = min(w, bh) / max(w, bh)
-            if aspect < 0.82:
-                continue
-
-            # It MUST be predominantly in the center of the camera.
-            cx = x + w / 2.0
-            cy = y + bh / 2.0
+            if aspect < 0.82: continue
+            cx, cy = x + w / 2.0, y + bh / 2.0
             dist_to_center = ((cx - w_img / 2.0) ** 2 + (cy - h_img / 2.0) ** 2) ** 0.5
             max_dist = ((w_img / 2.0) ** 2 + (h_img / 2.0) ** 2) ** 0.5
-            # Center weight: 1.0 at center, drops off as it moves to edge
             center_weight = max(0.1, 1.0 - (dist_to_center / max_dist))
-            
-            # Substantial penalty if it's heavily off-center (user is expected to center the cube)
-            if dist_to_center > min(w_img, h_img) * 0.35:
-                continue
-
-            # Exact square bonus
+            if dist_to_center > min(w_img, h_img) * 0.35: continue
             shape_bonus = 3.0 if len(approx) == 4 else (1.5 if len(approx) in [5, 6] else 0.5)
-
-            side = int(min(w, bh) * 0.92) # Contract slightly to avoid sampling edges
-            if side <= 0:
-                continue
-
+            side = int(min(w, bh) * 0.92)
+            if side <= 0: continue
             score = area * aspect * shape_bonus * (center_weight ** 2)
-
             if score > best_score:
                 best_score = score
-                bx = int(cx - side / 2.0)
-                by = int(cy - side / 2.0)
-                # Keep bounds inside image
-                bx = max(0, min(bx, w_img - side))
-                by = max(0, min(by, h_img - side))
+                bx, by = int(cx - side / 2.0), int(cy - side / 2.0)
+                bx, by = max(0, min(bx, w_img - side)), max(0, min(by, h_img - side))
                 best = (bx, by, side)
         return best
 
-    # ── Pass 1: Canny Edge Detection (Highly effective for grid structures) ──
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     edges = cv2.Canny(blurred, 40, 120)
-    kernel_edge = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    closed_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel_edge, iterations=2)
-    cnts_edge, _ = cv2.findContours(closed_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    best_region = score_contours(cnts_edge)
-    if best_region is not None:
-        return best_region
+    cnts_edge, _ = cv2.findContours(cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((5,5))), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    best = score_contours(cnts_edge)
+    if best: return best
 
-    # ── Pass 2: Saturation Masking (Fallback for coloured faces lacking contrast) ──
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     mask_sat = cv2.inRange(hsv, (0, 45, 45), (180, 255, 255))
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
-    clean = cv2.morphologyEx(mask_sat, cv2.MORPH_CLOSE, kernel, iterations=3)
-    clean = cv2.morphologyEx(clean, cv2.MORPH_OPEN, kernel, iterations=2)
-    cnts, _ = cv2.findContours(clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
+    cnts, _ = cv2.findContours(cv2.morphologyEx(mask_sat, cv2.MORPH_CLOSE, np.ones((7,7))), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     return score_contours(cnts)
 
-
 def get_calibrated_colors():
-    std_colors = {
-        'White':  (0, 30, 200),
-        'Yellow': (30, 140, 200),
-        'Orange': (13, 170, 200),
-        'Red':    (0,  180, 150),
-        'Green':  (65, 140, 150),
-        'Blue':   (110, 150, 150)
-    }
+    std_colors = {'White': (0,30,200), 'Yellow': (30,140,200), 'Orange': (13,170,200), 'Red': (0,180,150), 'Green': (65,140,150), 'Blue': (110,150,150)}
     for c_name, custom_hsv in st.session_state.custom_std_colors.items():
-        std_colors[c_name] = tuple(custom_hsv) # Re-tuple incase loaded from JSON as list
+        std_colors[c_name] = tuple(custom_hsv)
     return std_colors
 
-
 def classify_color(bgr_pixel, std_colors):
-    # Convert incoming pixel to CIE LAB color space for perpetual uniformity
-    pixel_bgr = np.uint8([[[bgr_pixel[0], bgr_pixel[1], bgr_pixel[2]]]])
-    pixel_lab = cv2.cvtColor(pixel_bgr, cv2.COLOR_BGR2LAB)[0][0]
+    pixel_lab = cv2.cvtColor(np.uint8([[[bgr_pixel[0], bgr_pixel[1], bgr_pixel[2]]]]), cv2.COLOR_BGR2LAB)[0][0]
     l, a, b = int(pixel_lab[0]), int(pixel_lab[1]), int(pixel_lab[2])
-
-    min_dist   = float('inf')
-    best_color = 'White'
-    
-    for c_name, (h_std, s_std, v_std) in std_colors.items():
-        # Convert tuned HSV standard back to LAB
-        std_hsv = np.uint8([[[h_std, s_std, v_std]]])
-        std_bgr = cv2.cvtColor(std_hsv, cv2.COLOR_HSV2BGR)
-        std_lab = cv2.cvtColor(std_bgr, cv2.COLOR_BGR2LAB)[0][0]
-        l_std, a_std, b_std = int(std_lab[0]), int(std_lab[1]), int(std_lab[2])
-        
-        # LAB is widely considered the gold standard for Colorimetry.
-        # We heavily weight 'a' and 'b' (True Color Vectors) to ignore shadows/glares 'L' (Luminance).
-        
-        # Special case: White intrinsically lacks a/b chroma, so L* difference matters slightly more
-        # to prevent extremely dark grey shadows from being claimed as white.
-        weight_L = 0.5 if c_name == 'White' else 0.15
-        
-        dist = ((a - a_std) * 2.0) ** 2 + ((b - b_std) * 2.0) ** 2 + ((l - l_std) * weight_L) ** 2
-
-        if dist < min_dist:
-            min_dist   = dist
-            best_color = c_name
-            
-    # Physics Override: Red vs Orange overlap in deep shadows.
-    # Orange physically contains more green light than Red. If it classified as Red, 
-    # but strongly exhibits an Orange G/R ratio, it is a non-dominant shielded Orange sticker.
-    if best_color == 'Red' and int(bgr_pixel[2]) > 0:
-        g_r_ratio = float(bgr_pixel[1]) / float(bgr_pixel[2])
-        if g_r_ratio > 0.30:
-            best_color = 'Orange'
-            
+    min_dist, best_color = float('inf'), 'White'
+    for c_name, (h_s, s_s, v_s) in std_colors.items():
+        std_lab = cv2.cvtColor(cv2.cvtColor(np.uint8([[[h_s, s_s, v_s]]]), cv2.COLOR_HSV2BGR), cv2.COLOR_BGR2LAB)[0][0]
+        l_s, a_s, b_s = int(std_lab[0]), int(std_lab[1]), int(std_lab[2])
+        w_L = 0.5 if c_name == 'White' else 0.15
+        dist = ((a - a_s) * 2.0)**2 + ((b - b_s) * 2.0)**2 + ((l - l_s) * w_L)**2
+        if dist < min_dist: min_dist, best_color = dist, c_name
+    if best_color == 'Red' and bgr_pixel[2] > 0 and (bgr_pixel[1]/bgr_pixel[2]) > 0.30: return 'Orange'
     return best_color
 
-
 def extract_colors_from_image(image_bytes, expected_center):
-    raw = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
-    img = cv2.imdecode(raw, 1)
-
-    if img is None:
-        st.error("❌ Could not decode the image. Please upload a valid JPG or PNG file.")
-        st.stop()
-
+    img = cv2.imdecode(np.asarray(bytearray(image_bytes.read()), dtype=np.uint8), 1)
+    if img is None: return None, None, "error"
     h_img, w_img = img.shape[:2]
-    std_colors   = get_calibrated_colors()
-    debug_img    = img.copy()
-
-    region = None
-    if st.session_state.get('auto_detect', True):
-        region = auto_detect_cube_region(img)
-
-    if region is None:
-        if st.session_state.get('auto_detect', True):
-            # If Auto-Detect was requested but algorithms couldn't find a crisp outline
-            # (e.g. background interference or blurry), fail so the user knows to rescan
-            return None, None, "not_detected"
-        else:
-            grid_scale = st.session_state.get('cube_size', 50)
-            grid_size  = int(min(h_img, w_img) * (grid_scale / 100.0))
-            start_x    = (w_img - grid_size) // 2
-            start_y    = (h_img - grid_size) // 2
-            detection_method = "manual"
-    else:
-        start_x, start_y, grid_size = region
-        detection_method = "auto"
-
-    cell_size = max(1, grid_size // 3)
-    # When auto is active, always use a Green box.
-    color_box = (0, 255, 0) if detection_method == "auto" else (255, 255, 255)
-
-    cv2.rectangle(debug_img,
-                  (start_x, start_y),
-                  (start_x + grid_size, start_y + grid_size),
-                  color_box, 3)
-    for i in range(1, 3):
-        cv2.line(debug_img,
-                 (start_x + i * cell_size, start_y),
-                 (start_x + i * cell_size, start_y + grid_size),
-                 color_box, 2)
-        cv2.line(debug_img,
-                 (start_x, start_y + i * cell_size),
-                 (start_x + grid_size, start_y + i * cell_size),
-                 color_box, 2)
-
-    label = "AUTO DETECTED" if detection_method == "auto" else "MANUAL GRID"
-    cv2.putText(debug_img, label,
-                (start_x, max(start_y - 10, 20)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, color_box, 2)
-
-    detected_colors = ['White'] * 9
-
-    # ── DYNAMIC LOCAL CALIBRATION (Shadow/Gradient Compensator) ──
-    # If the user scans the correct face, we anchor the standard hue for THIS face's
-    # dominant color precisely to the center tile's exact lighting. This prevents 
-    # dark corners on the dominant face from bleeding into other color clusters.
-    cx_ctr = start_x + 1 * cell_size + cell_size // 2
-    cy_ctr = start_y + 1 * cell_size + cell_size // 2
-    roi_ctr = img[max(0, cy_ctr - 5):min(h_img, cy_ctr + 5), max(0, cx_ctr - 5):min(w_img, cx_ctr + 5)]
+    std_colors = get_calibrated_colors()
     
-    if roi_ctr.size > 0:
-        c_b, c_g, c_r = np.median(roi_ctr, axis=(0, 1)).astype(np.uint8)
-        # Verify it natively first so we don't accidentally hijack a completely wrong face
-        if classify_color((c_b, c_g, c_r), std_colors) == expected_center:
-            hsv = cv2.cvtColor(np.uint8([[[c_b, c_g, c_r]]]), cv2.COLOR_BGR2HSV)[0][0]
-            # Override global setting just for this local image frame loop
+    region = auto_detect_cube_region(img) if st.session_state.get('auto_detect', True) else None
+    if region:
+        start_x, start_y, grid_size = region
+        method = "auto"
+    else:
+        if st.session_state.get('auto_detect', True): return None, None, "not_detected"
+        grid_size = int(min(h_img, w_img) * (st.session_state.get('cube_size', 50)/100.0))
+        start_x, start_y, method = (w_img-grid_size)//2, (h_img-grid_size)//2, "manual"
+
+    cell_size = grid_size // 3
+    debug_img = img.copy()
+    color_box = (0, 255, 0) if method == "auto" else (255, 255, 255)
+    cv2.rectangle(debug_img, (start_x, start_y), (start_x+grid_size, start_y+grid_size), color_box, 3)
+    
+    detected_colors = []
+    # Dynamic local calibration using center tile
+    cx_c, cy_c = start_x + 1.5*cell_size, start_y + 1.5*cell_size
+    roi_c = img[int(cy_c-5):int(cy_c+5), int(cx_c-5):int(cx_c+5)]
+    if roi_c.size > 0:
+        cb, cg, cr = np.median(roi_c, axis=(0,1)).astype(np.uint8)
+        if classify_color((cb,cg,cr), std_colors) == expected_center:
+            hsv = cv2.cvtColor(np.uint8([[[cb,cg,cr]]]), cv2.COLOR_BGR2HSV)[0][0]
             std_colors[expected_center] = (int(hsv[0]), int(hsv[1]), int(hsv[2]))
-            
+
     for row in range(3):
         for col in range(3):
-            cx = start_x + col * cell_size + cell_size // 2
-            cy = start_y + row * cell_size + cell_size // 2
-
-            y1, y2 = max(0, cy - 5), min(h_img, cy + 5)
-            x1, x2 = max(0, cx - 5), min(w_img, cx + 5)
-            roi = img[y1:y2, x1:x2]
-
-            idx = row * 3 + col
-            if roi.size > 0:
-                avg_b, avg_g, avg_r = np.median(roi, axis=(0, 1)).astype(np.uint8)
-                detected_colors[idx] = classify_color((avg_b, avg_g, avg_r), std_colors)
-
+            cx, cy = int(start_x + (col+0.5)*cell_size), int(start_y + (row+0.5)*cell_size)
+            roi = img[max(0, cy-5):min(h_img, cy+5), max(0, cx-5):min(w_img, cx+5)]
+            color = classify_color(np.median(roi, axis=(0,1)), std_colors) if roi.size > 0 else 'White'
+            detected_colors.append(color)
             cv2.circle(debug_img, (cx, cy), 8, (0, 255, 0), -1)
-            cv2.putText(debug_img, detected_colors[idx], (cx - 20, cy + 25),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 3)
-            cv2.putText(debug_img, detected_colors[idx], (cx - 20, cy + 25),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
-
-    # We no longer gracefully overwrite the center here. 
-    # We return the raw detected center so the UI can strictly validate if the user scanned the correct face.
-    return detected_colors, cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB), detection_method
-
+            cv2.putText(debug_img, color, (cx-20, cy+25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 2)
+            
+    return detected_colors, cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB), method
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3D TwistyPlayer
+# 3D SOLVER RENDERING
 # ─────────────────────────────────────────────────────────────────────────────
 def render_3d_solution(solution_str, speed):
-    def invert_solution(sol):
+    def invert(sol):
         inv = []
         for m in reversed(sol.split()):
             if "'" in m: inv.append(m.replace("'", ""))
             elif "2" in m: inv.append(m)
             else: inv.append(m + "'")
         return " ".join(inv)
-
-    setup_alg = invert_solution(solution_str)
-
-    html = f"""
-    <script src="https://cdn.cubing.net/v0/js/cubing/twisty" type="module"></script>
-    <style>
-      twisty-player {{ width: 100%; height: 360px; }}
-    </style>
-    <twisty-player
-      experimental-setup-alg="{setup_alg}"
-      alg="{solution_str}"
-      visualization="PG3D"
-      control-panel="bottom-row"
-      tempo-scale="{speed}"
-      background="none"
-      hint-facelets="none">
-    </twisty-player>
-    <p style="color:#aaa; font-size:13px; margin-top:6px;">
-      ▶ Press Play to watch the cube solve itself. Drag to rotate view.
-    </p>
-    """
+    setup = invert(solution_str)
+    html = f"""<script src="https://cdn.cubing.net/v0/js/cubing/twisty" type="module"></script>
+    <twisty-player experimental-setup-alg="{setup}" alg="{solution_str}" visualization="PG3D" control-panel="bottom-row" tempo-scale="{speed}" background="none" style="width:100%; height:360px;"></twisty-player>"""
     components.html(html, height=420)
 
-
 # ─────────────────────────────────────────────────────────────────────────────
-# Live Mini-Map
+# UI HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
-DEFAULT_FACE_COLORS = {face: (['White'] * 4 + [CENTER_COLORS[face]] + ['White'] * 4) for face in FACES}
-
-def render_live_map(active_face=None):
-    grid_positions = {'Up':(1,2),'Left':(2,1),'Front':(2,2),'Right':(2,3),'Back':(2,4),'Down':(3,2)}
-    # 4 columns, each around 68px wide
-    html = '<div style="display:grid;grid-template-columns:repeat(4,68px);gap:6px;justify-content:center;text-align:center;font-family:sans-serif;margin-top:8px;">'
-    for row in range(1, 4):
-        for col in range(1, 5):
-            found = next((f for f, p in grid_positions.items() if p == (row, col)), None)
-            if found:
-                colors      = st.session_state.cube_state[found]
-                is_active   = (found == active_face)
-                is_scanned  = (found in st.session_state.processed_photos)
-                center_emoji = COLOR_EMOJIS[CENTER_COLORS[found]]
-
-                border_style = ("3px solid #00e5ff; box-shadow: 0 0 10px #00e5ff;"
-                                if is_active else "1px solid rgba(255,255,255,0.2);")
-                opacity = "1.0" if (is_scanned or is_active) else "0.35"
-                status_dot = "✅" if is_scanned else ""
-
-                html += (f'<div style="opacity:{opacity}; display:flex; flex-direction:column; align-items:center;">'
-                         f'<div style="font-size:11px;font-weight:bold;color:{"#00e5ff" if is_active else "#ddd"};'
-                         f'margin-bottom:2px;">{center_emoji} {found} {status_dot}</div>'
-                         f'<div style="font-size:10px; color:#ffeb3b; padding-bottom:1px; line-height:1;">⬆️ Top</div>'
-                         f'<div style="display:grid;grid-template-columns:repeat(3,20px);gap:2px;justify-content:center;'
-                         f'border:{border_style};border-radius:4px;padding:3px;background:rgba(0,0,0,0.25);">')
-                for color in colors:
-                    html += (f'<div style="width:20px;height:20px;background-color:{HEX_COLORS[color]};'
-                             f'border:1px solid rgba(0,0,0,0.4);border-radius:2px;"></div>')
-                html += '</div></div>'
-            else:
-                html += '<div></div>'
-    html += '</div>'
-    return html
-
+def render_orientation_guide(face):
+    c = CENTER_COLORS[face]
+    t = {'Up':'Blue', 'Left':'White', 'Front':'White', 'Right':'White', 'Back':'White', 'Down':'Green'}[face]
+    return f"""<div style="display: flex; flex-direction: column; align-items: center; padding: 10px; border: 2px dashed #444; border-radius: 8px; width: fit-content; margin-bottom: 15px;">
+        <span style="font-size: 11px; font-weight: bold; color: #ffeb3b; margin-bottom: 4px;">⬆️ TOP EDGE ⬆️</span>
+        <div style="width: 60px; height: 15px; background-color: {HEX_COLORS[t]}; border: 1px solid #000;"></div>
+        <div style="width: 60px; height: 60px; background-color: {HEX_COLORS[c]}; border: 1px solid #000; display: flex; align-items: center; justify-content: center; font-size: 24px;">{COLOR_EMOJIS[c]}</div>
+    </div>"""
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SIDEBAR
 # ─────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("## 🧭 Navigation")
-    app_mode = st.radio("Choose Mode:", ["📸 Scan & Solve", "⚙️ Tune Colors"])
+    st.markdown("## 🧊 AI Rubik's Solver")
+    app_mode = st.radio("Mode:", ["📸 Scan & Solve", "⚙️ Tune Colors"], label_visibility="collapsed")
     st.divider()
 
     if app_mode == "📸 Scan & Solve":
-        active = st.session_state.get('face_selector', FACES[0])
-        st.markdown("## 🗺️ Live Cube Map")
-        st.caption("Dims = not yet scanned. Glowing = current face.")
-        st.markdown(render_live_map(active_face=active), unsafe_allow_html=True)
-        
+        st.markdown("### ⚙️ Settings")
+        st.session_state.auto_advance = st.checkbox("⏩ Auto-advance on success", value=st.session_state.auto_advance)
         st.divider()
-        st.markdown("## 🧪 Developer Demo Tools")
-        if st.button("🚀 Load Demo Images (1.jpeg)", use_container_width=True):
-            # Load images directly from disk into shared_face_images
-            for face, color_name in CENTER_COLORS.items():
-                fname = f"{color_name.lower()}1.jpeg"
-                if os.path.exists(fname):
-                    with open(fname, "rb") as f:
-                        st.session_state.shared_face_images[face] = f.read()
-                        # Also override processed to force refresh
-                        st.session_state.processed_photos.pop(face, None)
-            st.session_state.uploader_key_version += 1
-            st.rerun()
 
-    else:
-        st.markdown("## 🗺️ Cube State")
-        scanned = len(st.session_state.processed_photos)
-        st.caption(f"{scanned}/6 faces scanned. Switch to Scan & Solve to see the map.")
-
-    if st.button("🗑️ Clear All Shared Photos", use_container_width=True):
-        st.session_state.shared_face_images = {}
-        st.rerun()
-
+        st.markdown("### 🗺️ Interactive Map")
+        st.caption("Click a face to jump to it.")
+        grid_pos = {'Up':(0,1), 'Left':(1,0), 'Front':(1,1), 'Right':(1,2), 'Back':(1,3), 'Down':(2,1)}
+        active = st.session_state.programmatic_face
+        for r in range(3):
+            cols = st.columns(4)
+            for c in range(4):
+                f_key = next((f for f, p in grid_pos.items() if p == (r, c)), None)
+                with cols[c]:
+                    if f_key:
+                        is_sc = (f_key in st.session_state.processed_photos)
+                        lbl = f"{COLOR_EMOJIS[CENTER_COLORS[f_key]]}{'✅' if is_sc else ''}"
+                        if st.button(lbl, key=f"nav_{f_key}", use_container_width=True, type="primary" if f_key == active else "secondary"):
+                            st.session_state.programmatic_face = f_key
+                            st.rerun()
+        st.divider()
+        with st.expander("🧪 Debug Tools"):
+            if st.button("🚀 Load Demo Images", use_container_width=True):
+                for f, c_n in CENTER_COLORS.items():
+                    fname = f"{c_n.lower()}1.jpeg"
+                    if os.path.exists(fname):
+                        with open(fname, "rb") as f_in:
+                            st.session_state.shared_face_images[f] = f_in.read()
+                            st.session_state.processed_photos.pop(f, None)
+                st.session_state.uploader_key_version += 1
+                st.rerun()
+            if st.button("🗑️ Reset All Scans", use_container_width=True):
+                st.session_state.processed_photos = {}
+                st.session_state.shared_face_images = {}
+                st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN UI
 # ─────────────────────────────────────────────────────────────────────────────
-st.title("🧊 AI Rubik's Solver")
-
-# ══════════════════════════════════════════════════════════════════════════════
-# MODE A: SCAN & SOLVE
-# ══════════════════════════════════════════════════════════════════════════════
 if app_mode == "📸 Scan & Solve":
-
-    with st.expander("🎓 Beginner's Guide", expanded=False):
-        st.markdown("""
-        **Why 'Impossible Cube State'?** The algorithm is very strict about piece combinations.
-        The most common cause is holding the cube at the wrong angle when taking a photo.
-
-        **Golden Rule:** Follow the 🧭 **HOW TO HOLD** instructions exactly. The colour adjacent
-        to the face you're scanning must be visible at the **TOP edge of the camera screen**.
-
-        **Quick Fix:** After scanning, check the 🗺️ **Live Cube Map** on the left.
-        If any square looks wrong, click it in the `✏️ Edit / Verify Colors` panel to fix it!
-        """)
-
-    if st.session_state.custom_std_colors:
-        st.success(f"🧠 Custom lighting active for: {', '.join(st.session_state.custom_std_colors.keys())}")
-
-    if st.session_state.get('scan_success_msg'):
-        st.success(st.session_state.scan_success_msg)
-        st.session_state.scan_success_msg = None
-        
-    if st.session_state.get('scan_warning_msg'):
-        st.warning(st.session_state.scan_warning_msg)
-        st.session_state.scan_warning_msg = None
-
-    def render_orientation_guide(face):
-        center_col = CENTER_COLORS[face]
-        top_col = {'Up':'Blue', 'Left':'White', 'Front':'White', 'Right':'White', 'Back':'White', 'Down':'Green'}[face]
-        return f"""
-        <div style="display: flex; flex-direction: column; align-items: center; padding: 10px; border: 2px dashed #444; border-radius: 8px; width: fit-content; margin-bottom: 15px;">
-            <span style="font-size: 11px; font-weight: bold; color: #ffeb3b; margin-bottom: 4px; text-transform: uppercase;">⬆️ Top edge of Camera ⬆️</span>
-            <div style="width: 60px; height: 20px; background-color: {HEX_COLORS[top_col]}; border: 2px solid #222; border-radius: 4px 4px 0 0; margin-bottom: 2px; box-shadow: inset 0 0 5px rgba(0,0,0,0.3);"></div>
-            <div style="width: 60px; height: 60px; background-color: {HEX_COLORS[center_col]}; border: 2px solid #222; border-radius: 0 0 4px 4px; display: flex; align-items: center; justify-content: center; font-size: 24px; box-shadow: inset 0 0 10px rgba(0,0,0,0.3);">
-                {COLOR_EMOJIS[center_col]}
-            </div>
-            <span style="font-size: 12px; font-weight: bold; color: #fff; margin-top: 6px;">Hold like this</span>
-        </div>
-        """
-
-    # Read external programmatic updates if any
-    active_idx = FACES.index(st.session_state.get('programmatic_face', FACES[0]))
+    curr = st.session_state.programmatic_face
     
-    current_face = st.radio(
-        "🧭 **Select which face you are scanning:**", FACES,
-        index=active_idx,
-        format_func=lambda x: f"{COLOR_EMOJIS[CENTER_COLORS[x]]} {x} Face",
-        horizontal=True
-    )
-    
-    # We must reset the programmatic push so manual clicks work next time
-    if st.session_state.get('programmatic_face') != current_face:
-        st.session_state.programmatic_face = current_face
+    # Navigation Header
+    h_cols = st.columns([1, 2, 1])
+    with h_cols[0]:
+        if st.button("⬅️ Previous", use_container_width=True):
+            st.session_state.programmatic_face = FACES[(FACES.index(curr)-1)%6]; st.rerun()
+    with h_cols[1]:
+        st.markdown(f"<h2 style='text-align:center; margin-top:-10px;'>{COLOR_EMOJIS[CENTER_COLORS[curr]]} {curr} Face</h2>", unsafe_allow_html=True)
+    with h_cols[2]:
+        if st.button("Next ➡️", use_container_width=True):
+            st.session_state.programmatic_face = FACES[(FACES.index(curr)+1)%6]; st.rerun()
 
-    # FIX #2: Increment keys instead of invoking Javascript 
-    if st.session_state.get('last_scanned_face') != current_face:
-        st.session_state.last_scanned_face = current_face
+    if st.session_state.get('last_face') != curr:
+        st.session_state.last_face = curr
         st.session_state.uploader_key_version += 1
 
-    st.info(f"🧭 **HOW TO HOLD:** {ORIENTATION_GUIDE[current_face]}")
-    st.markdown(render_orientation_guide(current_face), unsafe_allow_html=True)
+    st.info(f"🧭 **HOLD:** {ORIENTATION_GUIDE[curr]}")
+    st.markdown(render_orientation_guide(curr), unsafe_allow_html=True)
 
-    col_camera, col_manual = st.columns([1, 1])
-
-    with col_camera:
-        st.write("### 📷 Image Input")
-
-        shared_bytes = st.session_state.shared_face_images.get(current_face)
-        if shared_bytes:
-            st.info(f"♻️ **Shared photo from Tune Colors is ready for {current_face} face.** Upload a new photo below to override.")
-
-        input_method = st.radio("Input Method:", ["📹 Live Camera", "📂 Upload Photo"],
-                                horizontal=True, label_visibility="collapsed", key="scan_method")
-
-        # Dynamically named keys ensure the widget dies and rebuilds clean when changing faces
-        current_version = st.session_state.uploader_key_version
+    c_cam, c_edit = st.columns([1, 1])
+    
+    with c_cam:
+        st.markdown("### 📷 Camera Input")
+        shared = st.session_state.shared_face_images.get(curr)
+        if shared: st.info("♻️ Demo/Shared photo ready.")
         
-        if input_method == "📹 Live Camera":
-            img_buffer = st.camera_input("Take a picture", key=f"global_cam_{current_version}")
-        else:
-            img_buffer = st.file_uploader("Upload face image", type=['png', 'jpg', 'jpeg'], key=f"global_up_{current_version}")
+        in_method = st.radio("Method:", ["📹 Live", "📂 Upload"], horizontal=True, label_visibility="collapsed")
+        auto_on = st.toggle("🤖 Auto-Detect Cube", value=st.session_state.auto_detect)
+        st.session_state.auto_detect = auto_on
+        
+        ver = st.session_state.uploader_key_version
+        buf = st.camera_input("Scan", key=f"c_{ver}") if in_method == "📹 Live" else st.file_uploader("Upload", type=['jpg','jpeg','png'], key=f"u_{ver}")
+        
+        active_buf = buf or (io.BytesIO(shared) if shared and not buf and in_method == "📂 Upload" else None)
+        
+        if active_buf:
+            c_key = f"{curr}_{id(active_buf)}"
+            if st.session_state.processed_photos.get(curr) != c_key:
+                if hasattr(active_buf, 'seek'): active_buf.seek(0)
+                det, dbg, meth = extract_colors_from_image(active_buf, CENTER_COLORS[curr])
+                if det:
+                    det[4] = CENTER_COLORS[curr] # Safety Force
+                    st.session_state.cube_state[curr] = det
+                    st.session_state[f"dbg_{curr}"] = dbg
+                    st.session_state.processed_photos[curr] = c_key
+                    if st.session_state.auto_advance:
+                        unsc = [f for f in FACES if f not in st.session_state.processed_photos]
+                        if unsc: st.session_state.programmatic_face = unsc[0]
+                    st.rerun()
+                else:
+                    st.error("❌ Cube not found. Ensure it is centered.")
 
-        active_buffer = img_buffer
-        is_shared     = False
-        if active_buffer is None and shared_bytes and input_method == "📂 Upload Photo":
-            active_buffer = io.BytesIO(shared_bytes)
-            is_shared     = True
+        if f"dbg_{curr}" in st.session_state:
+            st.image(st.session_state[f"dbg_{curr}"], caption="Detected Grid")
 
-        if active_buffer is not None:
-            cache_key = (f"{current_face}_shared" if is_shared
-                         else f"{current_face}_{getattr(active_buffer, 'file_id', id(active_buffer))}")
-
-            if st.session_state.processed_photos.get(current_face) != cache_key:
-                if hasattr(active_buffer, 'seek'):
-                    active_buffer.seek(0)
-                detected, debug_img, method = extract_colors_from_image(active_buffer, CENTER_COLORS[current_face])
-                
-                if detected is None:
-                    st.error("❌ **Could not detect the Rubik's cube.** Please ensure it is centered and clearly visible.")
-                    if current_face in st.session_state.processed_photos:
-                        del st.session_state.processed_photos[current_face]
-                    st.stop()
-
-                # Center Face Validation (Anti-Mistake Shield / Graceful Degradation)
-                is_warning = False
-                if detected[4] != CENTER_COLORS[current_face]:
-                    is_warning = True
-                    st.session_state.scan_warning_msg = f"⚠️ **Possible Color Shift Detected:** AI read a **{detected[4]}** center instead of **{CENTER_COLORS[current_face]}**. The photo was loaded, but please double-check the grid on the right to manually fix any wrong colors!"
-
-                # Force the center to be perfect just in case the algorithm needs strict Kociemba safety
-                detected[4] = CENTER_COLORS[current_face]
-
-                st.session_state.cube_state[current_face] = detected
-                st.session_state[f"debug_{current_face}"] = debug_img
-                st.session_state[f"method_{current_face}"] = method
-                st.session_state.processed_photos[current_face] = cache_key
-                st.session_state.last_solution = None
-
-                unscanned = [f for f in FACES if f not in st.session_state.processed_photos]
-                
-                if not is_warning:
-                    st.session_state.scan_success_msg = f"🎉 **{current_face} Face** scanned successfully."
-                    if unscanned:
-                        st.session_state.scan_success_msg += f" Auto-advanced to **{unscanned[0]} Face**."
-                    else:
-                        st.session_state.scan_success_msg += " All 6 faces are ready to solve!"
-
-                if unscanned:
-                    st.session_state.programmatic_face = unscanned[0]
-                    st.session_state.uploader_key_version += 1
-
-                st.rerun()
-
-        if f"debug_{current_face}" in st.session_state:
-            method_tag = st.session_state.get(f"method_{current_face}", "manual")
-            caption = ("✅ Auto-detected cube region! Fix any errors on the right ➡️"
-                       if method_tag == "auto"
-                       else "Manual grid used. Fix errors on the right ➡️")
-            st.image(st.session_state[f"debug_{current_face}"], caption=caption)
-
-    with col_manual:
-        st.write("### 🖱️ Edit / Verify Colors")
-        st.write("Read Left-to-Right, Top-to-Bottom.")
-        grid_cols = st.columns(3)
-        current_face_colors = st.session_state.cube_state[current_face]
-
-        def update_tile_color(face, idx):
-            st.session_state.cube_state[face][idx] = st.session_state[f"sel_{face}_{idx}"]
+    with c_edit:
+        st.markdown("### 🖱️ Edit Colors")
+        st.caption("Click squares to cycle: White → Yellow → Green → Blue → Red → Orange")
+        
+        def cycle(idx):
+            cols_seq = ['White', 'Yellow', 'Green', 'Blue', 'Red', 'Orange']
+            cur_c = st.session_state.cube_state[curr][idx]
+            st.session_state.cube_state[curr][idx] = cols_seq[(cols_seq.index(cur_c)+1)%6]
             st.session_state.last_solution = None
 
-        for i in range(9):
-            col_idx = i % 3
-            with grid_cols[col_idx]:
-                if i == 4:
-                    st.button(f"{COLOR_EMOJIS[CENTER_COLORS[current_face]]} Ctr",
-                              key=f"lock_{current_face}", disabled=True, use_container_width=True)
-                else:
-                    cur_c = current_face_colors[i]
-                    st.selectbox(
-                        "Color",
-                        options=AVAILABLE_COLORS,
-                        index=AVAILABLE_COLORS.index(cur_c) if cur_c in AVAILABLE_COLORS else 0,
-                        format_func=lambda x: f"{COLOR_EMOJIS[x]} {x}",
-                        key=f"sel_{current_face}_{i}",
-                        label_visibility="collapsed",
-                        on_change=update_tile_color,
-                        args=(current_face, i)
-                    )
-
-        st.divider()
-
-        next_idx = (FACES.index(current_face) + 1) % 6
-        if next_idx == 0:
-            st.success("🎉 All 6 faces scanned! You can click Validate & Solve below.")
+        for r in range(3):
+            ecols = st.columns(3)
+            for c in range(3):
+                idx = r*3 + c
+                with ecols[c]:
+                    if idx == 4:
+                        st.button(f"{COLOR_EMOJIS[CENTER_COLORS[curr]]}\n(Ctr)", disabled=True, use_container_width=True)
+                    else:
+                        c_val = st.session_state.cube_state[curr][idx]
+                        if st.button(f"{COLOR_EMOJIS[c_val]}\n{c_val}", key=f"e_{curr}_{idx}", use_container_width=True, on_click=cycle, args=(idx,)):
+                            pass
+        if st.button("🧹 Reset Face", use_container_width=True):
+            st.session_state.cube_state[curr] = ['White']*9
+            st.session_state.cube_state[curr][4] = CENTER_COLORS[curr]
+            st.session_state.processed_photos.pop(curr, None)
+            st.rerun()
 
     st.divider()
-
-    if st.button("Validate & Solve", type="primary", use_container_width=True):
-        # FIX #3: Warn gracefully instead of cryptic errors if they haven't finished scanning
-        scanned_count = len(st.session_state.processed_photos)
-        if scanned_count < 6:
-            st.warning(f"⚠️ You have only scanned {scanned_count}/6 faces. Please capture all 6 faces before solving.")
-            st.session_state.last_solution = None
+    if st.button("🚀 VALIDATE & SOLVE", type="primary", use_container_width=True):
+        if len(st.session_state.processed_photos) < 6:
+            st.warning("⚠️ Scan all 6 faces first!")
         else:
-            is_valid, validation_msg = validate_cube_state(st.session_state.cube_state)
-            if is_valid:
-                with st.spinner("Running Kociemba algorithm..."):
-                    result = solve_cube(st.session_state.cube_state)
-                st.session_state.last_solution = result
+            ok, msg = validate_cube_state(st.session_state.cube_state)
+            if ok:
+                st.session_state.last_solution = solve_cube(st.session_state.cube_state)
             else:
-                st.session_state.last_solution = None
-                st.error(f"❌ Validation Failed: {validation_msg}")
+                st.error(f"❌ {msg}")
 
-    solution = st.session_state.get('last_solution')
-    if solution is not None:
-        if solution == "!IMPOSSIBLE_STATE!" or solution.startswith("Error") or solution.startswith("System Error"):
-            st.error("❌ **Algorithm Error: Impossible Cube State Detected!**")
-            st.markdown("""
-            The color counts are correct (9 of each), but their arrangement is **physically impossible**.
-
-            **How to fix:**
-            1. Check the 🗺️ **Live Cube Map** — find any square that doesn't match your physical cube.
-            2. Use `✏️ Edit / Verify Colors` to click the wrong squares and correct them.
-            3. Most common cause: cube held sideways when photographed.
-            """)
+    sol = st.session_state.get('last_solution')
+    if sol:
+        if sol == "!IMPOSSIBLE_STATE!":
+            st.error("❌ Impossible arrangement! Check the Map for flipped edges/corners.")
         else:
-            st.balloons()
-            st.success("🎉 Solution Found!")
-            st.markdown(f"**Algorithm moves:** `{solution}`")
-            st.divider()
-            st.markdown("### 🎬 3D Step-by-Step Playback")
-            st.write("Watch the cube solve itself. Drag the 3D view to rotate. Use the timeline to step move-by-move.")
-            speed = st.select_slider(
-                "⏩ Playback Speed",
-                options=[0.5, 1.0, 2.0, 3.0],
-                value=1.0,
-                format_func=lambda x: f"{x}x"
-            )
-            render_3d_solution(solution, speed)
-            
-            st.divider()
-            st.markdown("### 🔄 Done solving?")
-            if st.button("Scan Another Cube", type="primary", use_container_width=True):
-                st.session_state.processed_photos = {}
-                for face in FACES:
-                    default_face = ['White'] * 9
-                    default_face[4] = CENTER_COLORS[face]
-                    st.session_state.cube_state[face] = default_face
-                st.session_state.last_solution = None
-                st.session_state.face_selector = FACES[0]
-                st.session_state.uploader_key_version += 1
-                st.rerun()
+            st.success(f"✅ Solution: {sol}")
+            render_3d_solution(sol, st.select_slider("Speed", [0.5, 1.0, 2.0], 1.0))
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# MODE B: TUNE COLORS
-# ══════════════════════════════════════════════════════════════════════════════
 elif app_mode == "⚙️ Tune Colors":
-    st.markdown("### ⚙️ Color Calibration")
-    st.write("Does the AI misread colors due to your lighting? Teach it correct HSV values by sampling from a photo.")
-
-    calib_color = st.radio(
-        "Select the color to calibrate:",
-        AVAILABLE_COLORS,
-        format_func=lambda x: f"{COLOR_EMOJIS[x]} {x}",
-        horizontal=True
-    )
-
-    if st.session_state.get('last_calib_color') != calib_color:
-        st.session_state.last_calib_color = calib_color
-        st.session_state.uploader_key_version += 1
-
-    target_face = COLOR_TO_FACE_NAME.get(calib_color)
-
-    st.info(f"**Instructions:** Place the **{calib_color}** block in the center of the frame, or upload a photo and steer the crosshair.")
-
-    calib_method = st.radio("Method:", ["📹 Live Camera", "📂 Upload Photo"],
-                             horizontal=True, label_visibility="collapsed", key="calib_method")
-
-    cv = st.session_state.uploader_key_version
-    if calib_method == "📹 Live Camera":
-        calib_img_buffer = st.camera_input("Take a photo of the target color", key=f"calib_cam_{cv}")
-    else:
-        calib_img_buffer = st.file_uploader("Upload photo", type=['png', 'jpg', 'jpeg'], key=f"calib_up_{cv}")
-
-
-    if calib_img_buffer is not None:
-        calib_img_buffer.seek(0)
-        raw_bytes = calib_img_buffer.read()
-
-        # ── Photo Memory Bridge ──────────────────────────────────────────────
-        if target_face:
-            st.markdown("<br>", unsafe_allow_html=True)
-            with st.container(border=True):
-                st.markdown(f"### 🔀 Quick Share to {target_face} Face")
-                st.write(f"Save time! Send this exact photo directly to the scanner so you don't have to upload it twice.")
-                use_for_scan = st.checkbox(
-                    f"📌 **Yes, also use this photo as the {COLOR_EMOJIS[calib_color]} {target_face} Face scan**",
-                    value=(target_face in st.session_state.shared_face_images),
-                    key=f"bridge_{calib_color}"
-                )
-
-            if use_for_scan:
-                if st.session_state.shared_face_images.get(target_face) != raw_bytes:
-                    st.session_state.shared_face_images[target_face] = raw_bytes
-                    st.session_state.processed_photos.pop(target_face, None)
-                st.success(f"✅ Photo shared! Switch to **Scan & Solve → {target_face} Face** and it will be auto-loaded.")
-            else:
-                st.session_state.shared_face_images.pop(target_face, None)
-
-            st.markdown("---")
-
-        # ── Point and Click Calibration ──────────────────────────────────────────────
-        st.write("#### 🎯 Point and Click Calibration")
-        st.write("Click directly on the exact color sticker in the image below to sample its physical color.")
-        
-        img = cv2.imdecode(np.asarray(bytearray(raw_bytes), dtype=np.uint8), 1)
-
-        if img is None:
-            st.error("❌ Could not decode the image. Please upload a valid JPG or PNG file.")
-            st.stop()
-
-        h_img, w_img = img.shape[:2]
-        
-        # Display image and get click coordinates
-        # Use a bounding box to keep the UI clean and prevent massive images from taking over
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        
-        value = streamlit_image_coordinates(
-            img_rgb,
-            key=f"calib_click_{calib_color}_{cv}"
-        )
-        
-        if value is None:
-            # Default to center if not clicked yet
-            cx, cy = w_img // 2, h_img // 2
-            st.info("👆 Click anywhere on the image above to sample the color at that point.")
-        else:
-            cx, cy = value["x"], value["y"]
-
-        cx = max(10, min(w_img - 10, cx))
-        cy = max(10, min(h_img - 10, cy))
-
-        roi = img[max(0, cy-5):min(h_img, cy+5), max(0, cx-5):min(w_img, cx+5)]
-        avg_b, avg_g, avg_r = np.median(roi, axis=(0, 1)).astype(np.uint8)
-
-        pixel_bgr = np.uint8([[[avg_b, avg_g, avg_r]]])
-        hsv = cv2.cvtColor(pixel_bgr, cv2.COLOR_BGR2HSV)[0][0]
-        h, s, v = int(hsv[0]), int(hsv[1]), int(hsv[2])
-
-        debug_img = img.copy()
-        cv2.circle(debug_img, (cx, cy), 15, (255, 255, 255), 4)
-        cv2.circle(debug_img, (cx, cy), 15, (0, 0, 0), 2)
-        debug_img_rgb = cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB)
-
-        st.write("#### 📊 Captured Sample")
-        c1, c2 = st.columns([1, 1])
-        with c1:
-            st.image(debug_img_rgb, caption="Selected Position")
-        with c2:
-            sample_hex = '#{:02x}{:02x}{:02x}'.format(int(avg_r), int(avg_g), int(avg_b))
-            st.markdown(f'<div style="width:100px;height:100px;background-color:{sample_hex};border:2px solid white;border-radius:10px;margin-bottom:8px;"></div>', unsafe_allow_html=True)
-            st.caption(f"HSV: [{h}, {s}, {v}]")
-            st.caption(f"RGB: [{int(avg_r)}, {int(avg_g)}, {int(avg_b)}]")
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        with st.container(border=True):
-            st.markdown("### 💾 Save Calibration Profile")
-            st.write("Happy with the target? Save this lighting profile permanently.")
-            if st.button(f"✅ Save HSV [{h}, {s}, {v}] as standard for {calib_color}", type="primary", use_container_width=True):
-                # FIX #5: Save to session state AND physically to JSON file
-                st.session_state.custom_std_colors[calib_color] = [h, s, v]
-                try:
-                    with open(CALIB_FILE, 'w') as f:
-                        json.dump(st.session_state.custom_std_colors, f)
-                    st.success(f"🎉 Success! AI has learned your new {calib_color} profile. Parameters saved permanently.")
-                except Exception as e:
-                    st.error(f"Failed to save profile: {e}")
-
-            elif (calib_color in st.session_state.custom_std_colors
-                    and tuple(st.session_state.custom_std_colors[calib_color]) == (h, s, v)):
-                st.info(f"📌 The crosshair is currently exactly on your saved standard HSV profile for {calib_color}.")
+    st.markdown("## ⚙️ Color Calibration")
+    c_cal = st.radio("Target:", AVAILABLE_COLORS, horizontal=True, format_func=lambda x: f"{COLOR_EMOJIS[x]} {x}")
+    ver = st.session_state.uploader_key_version
+    cal_buf = st.camera_input("Sample", key=f"cal_{ver}") or st.file_uploader("Upload", type=['jpg','png'], key=f"ulc_{ver}")
+    
+    if cal_buf:
+        img = cv2.imdecode(np.asarray(bytearray(cal_buf.read()), dtype=np.uint8), 1)
+        if img is not None:
+            rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            val = streamlit_image_coordinates(rgb, key=f"click_{c_cal}_{ver}")
+            cx, cy = (val['x'], val['y']) if val else (img.shape[1]//2, img.shape[0]//2)
+            roi = img[max(0, cy-5):cy+5, max(0, cx-5):cx+5]
+            if roi.size > 0:
+                avg = np.median(roi, axis=(0,1)).astype(np.uint8)
+                hsv = cv2.cvtColor(np.uint8([[[avg[0],avg[1],avg[2]]]]), cv2.COLOR_BGR2HSV)[0][0]
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    cv2.circle(rgb, (cx, cy), 15, (255,255,255), 3)
+                    st.image(rgb, caption="Click to sample")
+                with col2:
+                    st.markdown(f'<div style="width:100px;height:100px;background-color:rgb({avg[2]},{avg[1]},{avg[0]}); border:2px solid #fff;"></div>', unsafe_allow_html=True)
+                    if st.button(f"Save HSV {hsv} for {c_cal}", type="primary"):
+                        st.session_state.custom_std_colors[c_cal] = [int(hsv[0]), int(hsv[1]), int(hsv[2])]
+                        with open(CALIB_FILE, 'w') as f: json.dump(st.session_state.custom_std_colors, f)
+                        st.success("Tuned!")
