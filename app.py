@@ -152,35 +152,42 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
                 theta = angle * np.pi / 180.0
                 cos_t, sin_t = np.cos(theta), np.sin(theta)
                 pts_rect = np.array([[-w/2, -h/2], [w/2, -h/2], [w/2, h/2], [-w/2, h/2]])
-                best_cnt = np.array([[cx + p[0]*cos_t - p[1]*sin_t, cy + p[0]*sin_t + p[1]*cos_t] for p in pts_rect]).astype(np.int32)
-                pass_info = f"Pass 1: Rect Fallback ({len(stks)} stks). Area={(area/total_area)*100:.1f}%"
-    else:
-        pass_info = f"Pass 1: Only found {len(stks)} stickers (Need 4+)."
-
-    # Pass 2: Outline Extraction
+                best_cnt = np.array([[cx + p[0]*cos_t - p[1]*sin_t, cy + p[0]*sin_t + p[1]*cos_t] for p in pts_rect]).a    # Pass 2: Outline Extraction (Canny Edges)
     if best_cnt is None:
-        edges = cv2.dilate(cv2.Canny(blurred, 20, 100), np.ones((3,3)))
+        # Increase dilation to 5x5 to bridge gaps in broken outlines
+        edges = cv2.dilate(cv2.Canny(blurred, 20, 100), np.ones((5,5), np.uint8))
         if show_diag: diag_imgs['Pass 2 (Edges)'] = edges
         cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         max_a = 0
+        p2_notes = "No edges"
         for cnt in cnts:
             x, y, wc, hc = cv2.boundingRect(cnt)
             if x < 8 or y < 8 or (x+wc) > (work_w-8) or (y+hc) > (work_h-8): 
-                pass_info = "Pass 2: Rejected (Too close to border)"; continue
+                p2_notes = "P2: Too close to border"; continue
             area = cv2.contourArea(cnt)
+            area_pct = (area / total_area) * 100
             if (total_area * 0.02) < area < (total_area * 0.75):
                 hull = cv2.convexHull(cnt)
-                appr = cv2.approxPolyDP(hull, 0.05 * cv2.arcLength(hull, True), True)
+                appr = cv2.approxPolyDP(hull, 0.03 * cv2.arcLength(hull, True), True)
                 if len(appr) == 4:
                     _, (bw, bh), _ = cv2.minAreaRect(appr)
                     ratio = min(bw, bh) / max(bw, bh) if max(bw, bh) > 0 else 0
-                    area_pct = (area / total_area) * 100
-                    pass_info = f"Pass 2: Area={area_pct:.1f}%, Ratio={ratio:.2f}"
-                    if area > max_a and ratio > 0.5:
+                    p2_notes = f"P2: Area={area_pct:.1f}%, Ratio={ratio:.2f}"
+                    # Relaxed ratio to 0.3 to support extreme angles
+                    if area > max_a and ratio > 0.3:
                         max_a, best_cnt = area, appr.reshape(4, 2)
+                        pass_info = p2_notes
+            else:
+                if area_pct > 0.5: p2_notes = f"P2: Area {area_pct:.1f}% out of range"
+        
+        if best_cnt is None:
+            pass_info = f"{pass_info} | {p2_notes}"
 
     if best_cnt is None:
-        if "Pass 2" not in pass_info: pass_info = "Fail: No valid cube found."
+        return None, None, pass_info, diag_imgs, None
+max_a, best_cnt = area, appr.reshape(4, 2)
+
+    if best_cnt is None:
         return None, None, pass_info, diag_imgs, None
 
     # Perspective Prep
