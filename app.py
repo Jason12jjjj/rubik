@@ -197,9 +197,13 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
     if sharp < 25: trace.append("⚠️ WARNING: Image is very blurry. Please hold steady.")
     trace.append(f"Trace: Final Candidates={len(candidates)} (Deduplicated from {len(candidates_raw)})")
     
+    # --- CLUSTERING PHASE ---
     best_cnt = None
     best_cluster = []
     pass_info = "Searching..."
+    max_score = 0.0
+    best_reg_score = 0.0
+    cluster_coverage = 0.0 # 🔥 Fixed initialization
 
     if len(candidates) >= 4:
         # Cluster logic: Growth / Connected Components
@@ -209,8 +213,8 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
         valid_areas = [c['area'] for c in candidates]
         med_w = np.sqrt(np.median(valid_areas)) if valid_areas else 1.0
         
-        threshold_dist = med_w * 6.5 # Generous for perspective
-        min_dist = med_w * 0.55 # Prevent stacking
+        threshold_dist = med_w * 6.5
+        min_dist = med_w * 0.55
         
         visited = [False] * len(candidates)
         all_clusters = []
@@ -231,8 +235,6 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
                             queue.append(v)
             all_clusters.append([candidates[idx] for idx in curr_cluster])
         
-        max_score = 0
-        best_reg_score = 0.0
         for cluster in all_clusters:
             if len(cluster) < 4: continue
             
@@ -241,10 +243,10 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
             c_min_x, c_min_y = np.min(c_pts, axis=0)
             c_max_x, c_max_y = np.max(c_pts, axis=0)
             c_w, c_h = c_max_x - c_min_x, c_max_y - c_min_y
-            cluster_coverage = (c_w * c_h) / (work_w * work_h)
+            curr_coverage = (c_w * c_h) / (work_w * work_h)
             
             # 🛡️ SANITY CHECK: If the whole cluster is tiny (<1% of screen), its noise.
-            if cluster_coverage < 0.01: continue
+            if curr_coverage < 0.01: continue
 
             # Grid Consistency (Regularity)
             reg_score = 1.0
@@ -258,8 +260,7 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
                 reg_score = 1.0 / (1.0 + np.std(all_dists) / (np.mean(all_dists) + 1e-6))
 
             # SCORING: Favor Large Clusters (Coverage) + Size (Count) + Regularity
-            # This ensures we pick the BIG CUBE over a tiny skin-texture grid
-            score = (len(cluster)**2) * reg_score * (1.0 + cluster_coverage * 10)
+            score = (len(cluster)**2) * reg_score * (1.0 + curr_coverage * 10)
             
             if 7 <= len(cluster) <= 10: score *= 5.0
             if len(cluster) == 9: score += 50
@@ -267,8 +268,9 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
             if score > max_score:
                 max_score, best_cluster = score, cluster
                 best_reg_score = reg_score
+                cluster_coverage = curr_coverage # Store winning coverage
         
-        status_msg = f"Locked cluster: {len(best_cluster)} stks (Coverage={cluster_coverage*100:.1f}%, FinalScore={max_score:.1f})"
+        status_msg = f"Locked cluster: {len(best_cluster)} stks (Coverage={cluster_coverage*100:.1f}%, Score={max_score:.1f})"
         trace.append(status_msg)
         
         if len(best_cluster) >= 4:
