@@ -218,8 +218,8 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
             
             refined_pts_warped.append((final_x, final_y))
             
-            # Sampling with Robust ROI
-            roi = warped[final_y-15:final_y+15, final_x-15:final_x+15]
+            # --- CORE SAMPLE (Tiny 12x12 core for purity) ---
+            roi = warped[final_y-6:final_y+6, final_x-6:final_x+6]
             if roi.size == 0: continue
             bgr_avg = np.median(roi, axis=(0,1)).astype(np.uint8)
             lab = cv2.cvtColor(np.uint8([[[bgr_avg[0], bgr_avg[1], bgr_avg[2]]]]), cv2.COLOR_BGR2LAB)[0][0]
@@ -228,14 +228,15 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
             for name, (hs,ss,vs) in std_colors.items():
                 sl = cv2.cvtColor(cv2.cvtColor(np.uint8([[[hs,ss,vs]]]), cv2.COLOR_HSV2BGR), cv2.COLOR_BGR2LAB)[0][0]
                 dL, da, db = float(lab[0])-float(sl[0]), float(lab[1])-float(sl[1]), float(lab[2])-float(sl[2])
-                d = np.sqrt(0.2*(dL**2) + 1.5*(da**2) + 1.5*(db**2))
+                # Minimal L-weight (0.1) for pure chromatic matching
+                d = np.sqrt(0.1*(dL**2) + 2.0*(da**2) + 2.0*(db**2))
                 if d < min_d: min_d, best_c = d, name
             
             detected[r*3+c] = best_c
-            short = f"{COLOR_EMOJIS[best_c][0]}{best_c[0]}"
-            cv2.circle(debug_warped, (final_x, final_y), 10, (255,255,255), 1)
-            cv2.putText(debug_warped, short, (final_x-15, final_y+25), 0, 0.4, (0,0,0), 2, cv2.LINE_AA)
-            cv2.putText(debug_warped, short, (final_x-15, final_y+25), 0, 0.4, (255,255,255), 1, cv2.LINE_AA)
+            short = f"{COLOR_EMOJIS[best_c][0]}"
+            # Show diagnostic info on warped image
+            cv2.circle(debug_warped, (final_x, final_y), 6, (255,255,255), 1)
+            cv2.putText(debug_warped, f"{best_c[0]}", (final_x-5, final_y+5), 0, 0.4, (255,255,255), 1, cv2.LINE_AA)
 
     # --- AR Overlay (Full Resolution Feature-Locked) ---
     # Map from 300x300 warped space directly back to the FULL RESOLUTION padded image
