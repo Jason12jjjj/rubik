@@ -6,6 +6,23 @@ from rubiks_core import validate_cube_state, solve_cube
 # --- 1. SYSTEM CONFIG ---
 st.set_page_config(page_title="Manual Rubik's Solver", page_icon="🧊", layout="wide")
 
+# Custom CSS for Premium Design
+st.markdown("""
+<style>
+    /* Selected Color Glow Effect */
+    .stButton > button[aria-pressed="true"], .active-color {
+        border: 2px solid #00e5ff !important;
+        box-shadow: 0 0 15px rgba(0, 229, 255, 0.6) !important;
+        transform: scale(1.05);
+    }
+    /* Smooth transitions */
+    .stButton > button { transition: all 0.2s ease; }
+    /* Inventory Alerts */
+    .inventory-warn { color: #ffa500; font-weight: bold; }
+    .inventory-err { color: #ff4b4b; font-weight: bold; }
+</style>
+""", unsafe_allow_html=True)
+
 # Navigation via Map Clicks (Query Params)
 if "face_click" in st.query_params:
     st.session_state.programmatic_face = st.query_params["face_click"]
@@ -84,6 +101,8 @@ if 'last_solution' not in st.session_state:
     st.session_state.last_solution = None
 if 'selected_color' not in st.session_state:
     st.session_state.selected_color = 'White'
+if 'solve_speed' not in st.session_state:
+    st.session_state.solve_speed = 1.0
 if 'custom_std_colors' not in st.session_state:
     if os.path.exists(CALIB_FILE):
         try:
@@ -105,22 +124,24 @@ def push_history():
 
 # --- 3. UI COMPONENTS ---
 def render_interactive_map(active_face):
-    """Renders a 2D clickable net of the cube"""
+    """Renders a 2D clickable net of the cube with progress indicators"""
     grid = {'Up':(0,1), 'Left':(1,0), 'Front':(1,1), 'Right':(1,2), 'Back':(1,3), 'Down':(2,1)}
     html = '<div style="display:grid;grid-template-columns:repeat(4,50px);gap:6px;justify-content:center;padding:10px;background:#1e1e1e;border-radius:10px;border:1px solid #444;">'
     for r in range(3):
         for c in range(4):
             f_k = next((f for f, p in grid.items() if p == (r, c)), None)
             if f_k:
-                style = "border:2px solid #00e5ff; box-shadow:0 0 8px #00e5ff;" if f_k == active_face else "border:1px solid #444;"
+                # Progress Logic: A face is "touched" if it's not the default initialization
+                # For simplicity, we just check if it's the active one or a placeholder
+                is_active = (f_k == active_face)
+                style = "border:2px solid #00e5ff; box-shadow:0 0 10px #00e5ff;" if is_active else "border:1px solid #444;"
                 html += f"""<a href="/?face_click={f_k}" target="_self" style="text-decoration:none;">
                     <div style="text-align:center; {style} border-radius:4px; padding:2px; background:rgba(255,255,255,0.02);">
-                        <div style="font-size:10px; color:#aaa;">{COLOR_EMOJIS[CENTER_COLORS[f_k]]} {f_k[0]}</div>
+                        <div style="font-size:9px; color:{'#00e5ff' if is_active else '#888'}; font-weight:bold;">{f_k[0]}</div>
                         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1px;">"""
                 for i, clr in enumerate(st.session_state.cube_state[f_k]):
-                    # Ensure map center is also physically accurate
                     display_color = clr if i != 4 else CENTER_COLORS[f_k]
-                    html += f'<div style="width:12px;height:12px;background:{HEX_COLORS[display_color]};"></div>'
+                    html += f'<div style="width:12px;height:12px;background:{HEX_COLORS[display_color]}; border-radius:1px;"></div>'
                 html += '</div></div></a>'
             else: html += '<div></div>'
     html += '</div>'
@@ -135,9 +156,10 @@ def render_3d_player(solution):
             elif "2" in m: r.append(m)
             else: r.append(m+"'")
         return " ".join(r)
+    speed = st.session_state.get('solve_speed', 1.0)
     html = f"""<div style="background:#000; border:1px solid #00e5ff; border-radius:15px; padding:20px; box-shadow:0 0 20px rgba(0,229,255,0.2);">
         <script src="https://cubing.net" type="module"></script>
-        <twisty-player experimental-setup-alg="{inv_alg(solution)}" alg="{solution}" background="none" control-panel="bottom-row" style="width:100%; height:400px;"></twisty-player>
+        <twisty-player experimental-setup-alg="{inv_alg(solution)}" alg="{solution}" background="none" tempo-scale="{speed}" control-panel="bottom-row" style="width:100%; height:400px;"></twisty-player>
     </div>"""
     components.html(html, height=450)
 
@@ -240,43 +262,73 @@ if app_mode == "📸 Scan & Solve":
             for c in range(3):
                 idx = r*3 + c
                 color_val = st.session_state.cube_state[curr][idx]
-                if idx == 4:
-                    rows[c].button(f"{COLOR_EMOJIS[CENTER_COLORS[curr]]}\nCtr", disabled=True, use_container_width=True)
+                is_active = (idx != 4)
+                if not is_active:
+                    rows[c].button(f"🔒\n{COLOR_EMOJIS[CENTER_COLORS[curr]]}", disabled=True, use_container_width=True)
                 else:
                     rows[c].button(f"{COLOR_EMOJIS[color_val]}\n{color_val}", key=f"btn_{curr}_{idx}", on_click=paint_color, args=(curr, idx), use_container_width=True)
+
+        st.divider()
+        col_act1, col_act2 = st.columns(2)
+        with col_act1:
+            if st.button("🧹 Reset This Face", use_container_width=True):
+                st.session_state.cube_state[curr] = (['White']*4 + [CENTER_COLORS[curr]] + ['White']*4)
+                push_history(); st.rerun()
+        with col_act2:
+            st.toast(f"📍 Editing: {curr} Face")
 
         st.divider()
         st.markdown("#### 📂 Photo Assist")
         up_img = st.file_uploader("Upload face photo", type=['jpg', 'png', 'jpeg'], key=f"up_{curr}", label_visibility="collapsed")
         if up_img:
             st.image(up_img, caption="Reference Photo", use_container_width=True)
-            if st.button(f"📸 Scan {curr} Face", use_container_width=True):
+            if st.button(f"📸 Scan {curr} Face", type="primary", use_container_width=True):
                 with st.spinner("Processing..."):
                     d, db, ok = run_manual_grid_extract(up_img, CENTER_COLORS[curr])
                     if ok:
                         st.session_state.cube_state[curr] = d
-                        push_history() # Save to history so user can undo the scan
-                        st.success("✨ Colors sampled! You can now refine them manually.")
+                        push_history()
+                        st.success("✨ Scanned! Advancing...")
+                        # Auto-Advance Logic: Find next un-scanned face or just next in sequence
+                        next_idx = (FACES.index(curr) + 1) % 6
+                        st.session_state.programmatic_face = FACES[next_idx]
                         st.rerun()
-                    else:
-                        st.error("❌ Failed to parse image.")
+                    else: st.error("❌ Scan Failed.")
 
     with c_sol:
-        st.markdown("### 🚀 Generate Solution")
-        if st.button("CALCULATE RECOVERY PATH", type="primary", use_container_width=True):
-            with st.spinner("Analyzing cube state..."):
-                ok, msg = validate_cube_state(st.session_state.cube_state)
-                if ok:
-                    st.session_state.last_solution = solve_cube(st.session_state.cube_state)
-                else:
-                    st.error(f"❌ {msg}")
+        st.markdown("### 🚀 Solve Path")
+        # --- Predictive Diagnostics ---
+        all_stk = [s for f in FACES for s in st.session_state.cube_state[f]]
+        inv = {c: all_stk.count(c) for c in HEX_COLORS.keys()}
+        errors = [f"{COLOR_EMOJIS[c]} {inv[c]}/9" for c in inv if inv[c] != 9]
+        
+        is_ready = len(errors) == 0
+        btn_label = "CALCULATE PATH" if is_ready else "⚠️ CHECK COLORS"
+        
+        if st.button(btn_label, type="primary" if is_ready else "secondary", use_container_width=True):
+            if not is_ready:
+                st.warning(f"Inventory Mismatch: {', '.join(errors)}")
+            else:
+                with st.spinner("Solving..."):
+                    ok, msg = validate_cube_state(st.session_state.cube_state)
+                    if ok: st.session_state.last_solution = solve_cube(st.session_state.cube_state)
+                    else: st.error(f"❌ {msg}")
+        
+        if not is_ready:
+            st.caption("Please ensure all colors have exactly 9 stickers.")
         
         if st.session_state.last_solution:
             sol = st.session_state.last_solution
             if sol == "!IMPOSSIBLE_STATE!":
-                st.error("⚠️ IMPOSSIBLE STATE: Please double-check the colors.")
+                st.error("⚠️ IMPOSSIBLE: Check face orientations.")
             else:
-                st.success(f"✅ Solution Found: {sol}")
+                st.success(f"✅ Route: {sol}")
+                st.markdown("#### 📺 3D Player Control")
+                s1, s2, s3 = st.columns(3)
+                if s1.button("🐢 0.5x", use_container_width=True): st.session_state.solve_speed = 0.5
+                if s2.button("🏃 1.0x", use_container_width=True): st.session_state.solve_speed = 1.0
+                if s3.button("🚀 2.0x", use_container_width=True): st.session_state.solve_speed = 2.0
+                st.caption(f"Current Speed: {st.session_state.solve_speed}x")
                 render_3d_player(sol)
 
 elif app_mode == "⚙️ Tune Colors":
