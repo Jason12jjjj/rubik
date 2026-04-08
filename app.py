@@ -118,7 +118,7 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
     best_cnt = None
     pass_info = "Waiting..."
     
-    # Pass 1: Sticker Clustering
+    # --- Pass 1: Sticker-Based Detection ---
     thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
     if show_diag: diag_imgs['Pass 1 (Stickers)'] = thresh
     cnts_s, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -132,7 +132,6 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
 
     total_area = work_h * work_w
     if len(stks) >= 4:
-        # Pass 1 Upgrade: More flexible fit (0.02 epsilon)
         combined = np.vstack(stks)
         hull = cv2.convexHull(combined)
         peri = cv2.arcLength(hull, True)
@@ -141,20 +140,23 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
         if len(appp) == 4:
             area = cv2.contourArea(appp)
             area_pct = (area / total_area) * 100
-            pass_info = f"Pass 1: {len(stks)} stickers. Area={area_pct:.1f}%"
+            pass_info = f"Pass 1: {len(stks)} stks. Area={area_pct:.1f}%"
             if (total_area * 0.02 < area < total_area * 0.80):
                 best_cnt = appp.reshape(4, 2)
         else:
-            # Fallback to robust bounding rect if poly fitting fails
             (cx, cy), (w, h), angle = cv2.minAreaRect(combined)
             area = w * h
             if (total_area * 0.02 < area < total_area * 0.80):
                 theta = angle * np.pi / 180.0
                 cos_t, sin_t = np.cos(theta), np.sin(theta)
                 pts_rect = np.array([[-w/2, -h/2], [w/2, -h/2], [w/2, h/2], [-w/2, h/2]])
-                best_cnt = np.array([[cx + p[0]*cos_t - p[1]*sin_t, cy + p[0]*sin_t + p[1]*cos_t] for p in pts_rect]).a    # Pass 2: Outline Extraction (Canny Edges)
+                best_cnt = np.array([[cx + p[0]*cos_t - p[1]*sin_t, cy + p[0]*sin_t + p[1]*cos_t] for p in pts_rect]).astype(np.int32)
+                pass_info = f"Pass 1: Rect Fallback ({len(stks)} stks). Area={(area/total_area)*100:.1f}%"
+    else:
+        pass_info = f"Pass 1 Fail: {len(stks)} stks."
+
+    # --- Pass 2: Edge-Based Detection (Enhanced Dilation) ---
     if best_cnt is None:
-        # Increase dilation to 5x5 to bridge gaps in broken outlines
         edges = cv2.dilate(cv2.Canny(blurred, 20, 100), np.ones((5,5), np.uint8))
         if show_diag: diag_imgs['Pass 2 (Edges)'] = edges
         cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -163,34 +165,27 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
         for cnt in cnts:
             x, y, wc, hc = cv2.boundingRect(cnt)
             if x < 8 or y < 8 or (x+wc) > (work_w-8) or (y+hc) > (work_h-8): 
-                p2_notes = "P2: Too close to border"; continue
+                p2_notes = "P2: Near border"; continue
             area = cv2.contourArea(cnt)
             area_pct = (area / total_area) * 100
-            if (total_area * 0.02) < area < (total_area * 0.75):
+            if (total_area * 0.02) < area < (total_area * 0.80):
                 hull = cv2.convexHull(cnt)
                 appr = cv2.approxPolyDP(hull, 0.03 * cv2.arcLength(hull, True), True)
                 if len(appr) == 4:
                     _, (bw, bh), _ = cv2.minAreaRect(appr)
                     ratio = min(bw, bh) / max(bw, bh) if max(bw, bh) > 0 else 0
                     p2_notes = f"P2: Area={area_pct:.1f}%, Ratio={ratio:.2f}"
-                    # Relaxed ratio to 0.3 to support extreme angles
                     if area > max_a and ratio > 0.3:
                         max_a, best_cnt = area, appr.reshape(4, 2)
                         pass_info = p2_notes
             else:
-                if area_pct > 0.5: p2_notes = f"P2: Area {area_pct:.1f}% out of range"
+                if area_pct > 0.5: p2_notes = f"P2: Area {area_pct:.1f}% invalid"
         
-        if best_cnt is None:
-            pass_info = f"{pass_info} | {p2_notes}"
+        if best_cnt is None: pass_info = f"{pass_info} | {p2_notes}"
 
-    if best_cnt is None:
-        return None, None, pass_info, diag_imgs, None
-max_a, best_cnt = area, appr.reshape(4, 2)
+    if best_cnt is None: return None, None, pass_info, diag_imgs, None
 
-    if best_cnt is None:
-        return None, None, pass_info, diag_imgs, None
-
-    # Perspective Prep
+    # --- Perspective Warping ---
     pts_padded = (best_cnt.reshape(4, 2) * (h_p / work_h)).astype("float32")
     rect = np.zeros((4, 2), dtype="float32")
     s = pts_padded.sum(axis=1)
@@ -199,92 +194,65 @@ max_a, best_cnt = area, appr.reshape(4, 2)
     rect[1], rect[3] = pts_padded[np.argmin(diff)], pts_padded[np.argmax(diff)]
     dst = np.array([[0,0], [299,0], [299,299], [0,299]], dtype="float32")
     
-    # Warp & Detect (Deep Refinement Stage)
     M = cv2.getPerspectiveTransform(rect, dst)
     warped = cv2.warpPerspective(img_padded, M, (300, 300))
     debug_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB)
     
-    # 🌟 Deep Alignment: Refine sampling points using Saturation Centroids
+    # --- Deep Alignment Refinement (Saturation Centroids) ---
     std_colors = get_calibrated_colors()
     detected = ['White'] * 9
-    refined_pts_warped = [] # Store for AR later
-    
+    refined_pts_warped = [] 
     hsv_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)
     sat_map = hsv_warped[:,:,1]
     
     for r in range(3):
         for c in range(3):
-            # Target center in 300x300 warped space
             target_cx, target_cy = int((c+0.5)*100), int((r+0.5)*100)
-            
-            # --- LOCAL SNAP (Refinement) ---
-            # Search in a local window (e.g., 60x60 around predicted center)
             win = 30
             y1, y2 = max(0, target_cy-win), min(300, target_cy+win)
             x1, x2 = max(0, target_cx-win), min(300, target_cx+win)
             roi_sat = sat_map[y1:y2, x1:x2]
-            
-            # Use Saturation Moments to find the "Center of Color Mass"
             moments = cv2.moments(roi_sat)
-            if moments["m00"] > 100: # Ensure there's some color mass
+            if moments["m00"] > 100:
                 snap_x = x1 + int(moments["m10"] / moments["m00"])
                 snap_y = y1 + int(moments["m01"] / moments["m00"])
-                # Constrain movement to 25px from predicted center to prevent cross-bleeding
                 dist = np.sqrt((snap_x - target_cx)**2 + (snap_y - target_cy)**2)
-                if dist < 25:
-                    final_cx, final_cy = snap_x, snap_y
-                else: 
-                    # If snap moved too far, move only partially towards it
-                    angle = np.arctan2(snap_y - target_cy, snap_x - target_cx)
-                    final_cx = target_cx + int(20 * np.cos(angle))
-                    final_cy = target_cy + int(20 * np.sin(angle))
+                final_cx, final_cy = (snap_x, snap_y) if dist < 25 else (target_cx, target_cy)
             else:
                 final_cx, final_cy = target_cx, target_cy
             
             refined_pts_warped.append((final_cx, final_cy))
-            
-            # Sample color at REFINED coordinate
             roi = warped[final_cy-18:final_cy+18, final_cx-18:final_cx+18]
             if roi.size == 0: continue
             bgr_avg = np.median(roi, axis=(0,1)).astype(np.uint8)
             lab = cv2.cvtColor(np.uint8([[[bgr_avg[0], bgr_avg[1], bgr_avg[2]]]]), cv2.COLOR_BGR2LAB)[0][0]
-            
             min_d, best_c = float('inf'), 'White'
             for name, (hs, ss, vs) in std_colors.items():
                 sl = cv2.cvtColor(cv2.cvtColor(np.uint8([[[hs,ss,vs]]]), cv2.COLOR_HSV2BGR), cv2.COLOR_BGR2LAB)[0][0]
                 dL, da, db = float(lab[0])-float(sl[0]), float(lab[1])-float(sl[1]), float(lab[2])-float(sl[2])
                 d = np.sqrt(0.2*(dL**2) + 1.5*(da**2) + 1.5*(db**2))
                 if d < min_d: min_d, best_c = d, name
-            
             detected[r*3+c] = best_c
             short = f"{COLOR_EMOJIS[best_c][0]}{best_c[0]}"
             cv2.circle(debug_warped, (final_cx, final_cy), 15, (255,255,255), 2)
             cv2.putText(debug_warped, short, (final_cx-20, final_cy+40), 0, 0.45, (0,0,0), 2, cv2.LINE_AA)
             cv2.putText(debug_warped, short, (final_cx-20, final_cy+40), 0, 0.45, (255,255,255), 1, cv2.LINE_AA)
 
-    # AR Overlay: Project refined centers back to the original photo
-    draw_map = {'White': (255,255,255), 'Yellow': (0,255,255), 'Orange': (0,165,255), 'Red': (0,0,255), 'Green': (0,255,0), 'Blue': (255,0,0)}
-    
-    # Sort best_cnt for M_inv (must match dst order)
+    # --- AR Overlay (Refined Projection) ---
     pts_w = best_cnt.reshape(4, 2).astype("float32")
     s = pts_w.sum(axis=1)
     diff = np.diff(pts_w, axis=1)
     rect_w = np.zeros((4, 2), dtype="float32")
     rect_w[0], rect_w[2] = pts_w[np.argmin(s)], pts_w[np.argmax(s)]
     rect_w[1], rect_w[3] = pts_w[np.argmin(diff)], pts_w[np.argmax(diff)]
-    
     M_inv = cv2.getPerspectiveTransform(dst, rect_w)
     
+    draw_map = {'White': (255,255,255), 'Yellow': (0,255,255), 'Orange': (0,165,255), 'Red': (0,0,255), 'Green': (0,255,0), 'Blue': (255,0,0)}
     for i, (fx, fy) in enumerate(refined_pts_warped):
-        # Project each refined warped point back to work_img space
-        pts_w = np.array([[[fx, fy]]], dtype="float32")
-        pts_orig = np.int32(cv2.perspectiveTransform(pts_w, M_inv))
-        
-        px, py = pts_orig[0][0][0], pts_orig[0][0][1]
+        p_orig = np.int32(cv2.perspectiveTransform(np.array([[[fx, fy]]], dtype="float32"), M_inv))
+        px, py = p_orig[0][0][0], p_orig[0][0][1]
         c_name = detected[i]
         bgr = draw_map.get(c_name, (0, 255, 0))
-        
-        # Draw refined indicators
         cv2.circle(tracking_img, (px, py), 4, bgr, -1)
         cv2.circle(tracking_img, (px, py), 5, (255,255,255), 1)
         cv2.putText(tracking_img, c_name[0], (px+8, py+8), 0, 0.35, (0,0,0), 2, cv2.LINE_AA)
