@@ -133,15 +133,13 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
     img_padded = cv2.copyMakeBorder(img, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=[0, 0, 0])
     h_p, w_p = img_padded.shape[:2]
     
-    # Init variables to avoid UnboundLocalError
+    # Init variables for safety
     trace = []
     diag_imgs = {}
     best_cluster = []
     med_w = 40.0
     max_score = 0.0
-    best_reg_score = 0.0
     cluster_coverage = 0.0
-    pass_info = "Searching..."
     
     # Downscale for processing speed
     work_h = 650
@@ -155,7 +153,6 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
     trace.append(f"📸 Env: Brightness={bright:.1f}, Sharpness={sharp:.1f}")
     
     if bright < 65 or bright > 220:
-        trace.append("⚡ Extreme light detected. Applying CLAHE Contrast Boost...")
         clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
         gray = clahe.apply(gray)
     
@@ -163,7 +160,6 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
 
     # --- 2. DETECTION PHASE: SEARCHING FOR STICKERS ---
     candidates = []
-    all_raw = [] # For Diagnostic Map
     
     def process_contours(clist, tag=""):
         found = []
@@ -176,14 +172,13 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
             solidity = area / h_area if h_area > 0 else 0
             extent = area / (w * h) if (w * h) > 0 else 0
             
-            # BIO-GUARD
             roi_mini = work_img[max(0,y):min(work_h,y+h), max(0,x):min(work_w,x+w)]
             is_skin, is_vibrant = False, True
             if roi_mini.size > 0:
                 bgr_m = np.mean(roi_mini, axis=(0,1))
                 hsv_m = cv2.cvtColor(np.uint8([[bgr_m]]), cv2.COLOR_BGR2HSV)[0][0]
                 is_skin = (bgr_m[2] > bgr_m[1] > bgr_m[0]) and (hsv_m[1] < 110)
-                is_vibrant = hsv_m[1] > 110 or hsv_m[2] > 200
+                is_vibrant = hsv_m[1] > 110 or hsv_m[2] > 190
 
             if (work_h*0.005)**2 < area < (work_h*0.8)**2:
                 if ratio > 0.45 and solidity > 0.75 and extent > 0.5:
@@ -193,129 +188,69 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
                             cx, cy = int(M["m10"]/M["m00"]), int(M["m01"]/M["m00"])
                             dist_c = np.sqrt((cx-work_w/2)**2 + (cy-work_h/2)**2)
                             found.append({'cnt':c, 'center':(cx,cy), 'area':area, 'weight': 1.0/(1.0+dist_c/work_w)})
-            
-            if tag != "SILENT":
-                all_raw.append({'box':(x,y,w,h), 'status': "RED", 'center':(x+w//2, y+h//2)})
         return found
 
-    # 🚀 ADAPTIVE SHUTTER LOOP: Try different adaptive thresholds to find best candidates
     for ws in [13, 31, 61, 101, 151]:
         thr = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, ws, 2)
-        c_found = process_contours(cv2.findContours(thr, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0], tag="SILENT" if ws > 13 else "")
-        
-        # Deduplicate and grow global candidates list
+        c_found = process_contours(cv2.findContours(thr, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0])
         for cand in c_found:
             if not any(np.sqrt((cand['center'][0]-c['center'][0])**2 + (cand['center'][1]-c['center'][1])**2) < 15 for c in candidates):
                 candidates.append(cand)
-        
-        # Internal early exit: If we have > 9 firm candidates, we likely have enough
         if len(candidates) >= 12: break
+    
+    trace.append(f"Trace: Final Candidates={len(candidates)}")
 
-    trace.append(f"Trace: Final Candidates={len(candidates)} (from multi-scale scan)")
-    if sharp < 25: trace.append("⚠️ WARNING: Image blurry. Hold steady.")
-
-    # --- 3. CLUSTERING PHASE: BFS CONNECTIVITY ---
+    # --- 3. CLUSTERING PHASE: GREEDY GRID LOCKING ---
     if len(candidates) >= 4:
-        # Cluster logic: Growth / Connected Components
-        pts = np.array([c['center'] for c in candidates])
-        
-        # 📏 ROBUST SCALE: Use median to ignore tiny noise/glare
+        # Step A: Filter by Area Consistency
         valid_areas = [c['area'] for c in candidates]
-        med_w = np.sqrt(np.median(valid_areas)) if valid_areas else 1.0
+        med_area = np.median(valid_areas)
+        med_w = np.sqrt(med_area)
+        filtered_cands = [c for c in candidates if 0.4 * med_area < c['area'] < 2.5 * med_area]
         
-        threshold_dist = med_w * 6.5
-        min_dist = med_w * 0.55
+        # Step B: Select Anchor (Closest to center)
+        filtered_cands.sort(key=lambda x: x['weight'], reverse=True)
         
-        visited = [False] * len(candidates)
-        all_clusters = []
-        
-        for i in range(len(candidates)):
-            if visited[i]: continue
-            curr_cluster = [i]
-            queue = [i]
-            visited[i] = True
-            while queue:
-                u = queue.pop(0)
-                for v in range(len(candidates)):
-                    if not visited[v]:
-                        d = np.sqrt(np.sum((pts[u] - pts[v])**2))
-                        if min_dist < d < threshold_dist:
-                            visited[v] = True
-                            curr_cluster.append(v)
-                            queue.append(v)
-            all_clusters.append([candidates[idx] for idx in curr_cluster])
-        
-        max_score = 0.1 # Very low baseline to encourage locking
-        for cluster in all_clusters:
-            if len(cluster) < 4: continue
+        if filtered_cands:
+            anchor = filtered_cands[0]
+            # Step C: Harvest Nearest Neighbors
+            def get_dist(c):
+                return np.sqrt((c['center'][0] - anchor['center'][0])**2 + (c['center'][1] - anchor['center'][1])**2)
             
-            # 📐 Calculate Cluster Coverage (Physical size in image)
-            c_pts = np.array([c['center'] for c in cluster])
-            c_min_x, c_min_y = np.min(c_pts, axis=0)
-            c_max_x, c_max_y = np.max(c_pts, axis=0)
-            c_w, c_h = c_max_x - c_min_x, c_max_y - c_min_y
-            curr_coverage = (c_w * c_h) / (work_w * work_h)
+            filtered_cands.sort(key=get_dist)
+            potential_grid = filtered_cands[:9]
             
-            # 🧬 Robust Metric: Area Consistency (Are they similar in size?)
-            c_areas = [c['area'] for c in cluster]
-            area_std = np.std(c_areas) / (np.mean(c_areas) + 1e-6)
-            consistency_score = 1.0 / (1.0 + area_std)
+            # Step D: Quality Check
+            if len(potential_grid) >= 4:
+                c_pts = np.array([c['center'] for c in potential_grid])
+                c_min_x, c_min_y = np.min(c_pts, axis=0)
+                c_max_x, c_max_y = np.max(c_pts, axis=0)
+                cw, ch = c_max_x - c_min_x, c_max_y - c_min_y
+                aspect_ratio = min(cw, ch) / (max(cw, ch) + 1e-6)
+                consistency = 1.0 / (1.0 + np.std([x['area'] for x in potential_grid]) / (np.mean([x['area'] for x in potential_grid]) + 1e-6))
+                
+                if aspect_ratio > 0.6 and consistency > 0.5:
+                    best_cluster = potential_grid
+                    max_score = len(best_cluster) * consistency * aspect_ratio
 
-            # Regularity & Bucketing Score
-            reg_score = 1.0
-            all_dists = []
-            for p_m in cluster:
-                px, py = p_m['center']
-                d_to_others = sorted([np.sqrt((px-o['center'][0])**2 + (py-o['center'][1])**2) for o in cluster if o is not p_m])
-                if d_to_others: all_dists.extend(d_to_others[:2])
-            
-            if all_dists:
-                reg_score = 1.0 / (1.0 + np.std(all_dists) / (np.mean(all_dists) + 1e-6))
+    trace.append(f"Locked cluster: {len(best_cluster)} stks (Score={max_score:.1f})")
 
-            # Bonus for 3x3 layout
-            grid_bonus = 1.0
-            if len(cluster) >= 7:
-                pts_sort_y = sorted(cluster, key=lambda x: x['center'][1])
-                rows = []
-                if pts_sort_y:
-                    curr_row = [pts_sort_y[0]]
-                    for k in range(1, len(pts_sort_y)):
-                        if pts_sort_y[k]['center'][1] - curr_row[-1]['center'][1] < med_w * 1.3:
-                            curr_row.append(pts_sort_y[k])
-                        else:
-                            rows.append(curr_row); curr_row = [pts_sort_y[k]]
-                    rows.append(curr_row)
-                if len(rows) == 3: grid_bonus = 2.0
-
-            # Aggressive Score: Prioritize Consistency and Count
-            score = (len(cluster)**2) * consistency_score * reg_score * grid_bonus * (1.0 + curr_coverage * 5)
-            
-            if score > max_score:
-                max_score, best_cluster = score, cluster
-                best_reg_score, cluster_coverage = reg_score, curr_coverage
-
-        status_msg = f"Locked cluster: {len(best_cluster)} stks (RegScore={best_reg_score:.2f}, FinalScore={max_score:.1f})"
-        trace.append(status_msg)
-
-    # --- ADVANCED DIAGNOSTIC DRAWING ---
+    # --- DIAGNOSTICS ---
     if show_diag:
-        # Draw ALL raw candidates in RED
-        for r in candidates:
-            c = r['cnt']
-            x, y, w, h = cv2.boundingRect(c)
-            cv2.rectangle(work_img, (x, y), (x + w, y + h), (0, 0, 255), 1)
-        
-        # Draw INCLUDED cluster in GREEN circles
+        temp_img = work_img.copy()
+        for cand in candidates:
+            cx, cy = cand['center']
+            cv2.rectangle(temp_img, (cx-10, cy-10), (cx+10, cy+10), (0,0,255), 1)
         for b in best_cluster:
-            cv2.circle(work_img, b['center'], 5, (0, 255, 0), -1)
-            
-        diag_imgs['Sticker Candidates'] = cv2.cvtColor(work_img, cv2.COLOR_BGR2RGB)
+            bx, by = b['center']
+            cv2.circle(temp_img, (bx, by), 12, (0, 255, 0), 2)
+        diag_imgs['Lock Strategy'] = cv2.cvtColor(temp_img, cv2.COLOR_BGR2RGB)
 
     # --- 4. TRANSFORMATION & OUTPUT ---
     if len(best_cluster) < 4:
         return None, None, "Searching...", diag_imgs, None, None, trace, bright, sharp
 
-    # Coordinate Extrapolation
+    # Boundary Extrapolation
     cluster_pts = np.array([c['center'] for c in best_cluster], dtype="float32")
     rect_min = cv2.minAreaRect(cluster_pts)
     box_raw = cv2.boxPoints(rect_min)
