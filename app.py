@@ -17,19 +17,38 @@ ORIENTATION_GUIDE = {
 
 st.markdown("""
 <style>
+    /* Professional Scanner Overlay */
     [data-testid="stCameraInput"] { position: relative; }
     [data-testid="stCameraInput"]::after {
         content: ""; position: absolute; top: 25px; left: 50%; transform: translateX(-50%);
-        width: 260px; height: 260px; border: 4px solid #00e5ff; border-radius: 8px; z-index: 999;
-        pointer-events: none; box-shadow: 0 0 0 1000px rgba(0,0,0,0.4);
-        background-image: linear-gradient(to right, rgba(0,229,255,0.3) 1px, transparent 1px), linear-gradient(to bottom, rgba(0,229,255,0.3) 1px, transparent 1px);
-        background-size: 86.6px 86.6px; animation: pulse 2s infinite;
+        width: 260px; height: 260px; border: 1px solid rgba(0, 229, 255, 0.4); border-radius: 4px; z-index: 999;
+        pointer-events: none; box-shadow: 0 0 0 1000px rgba(0,0,0,0.4); /* Deep Focus Shadow */
+        background-image: 
+            linear-gradient(to right, rgba(0,229,255,0.3) 1px, transparent 1px),
+            linear-gradient(to bottom, rgba(0,229,255,0.3) 1px, transparent 1px);
+        background-size: 86.6px 86.6px;
     }
+    
+    /* Dynamic Orientation Text - Floating Overlay */
     [data-testid="stCameraInput"]::before {
-        content: "PLACE FACE IN GRID"; position: absolute; top: -10px; width: 100%; text-align: center;
-        color: #00e5ff; font-weight: bold; z-index: 1000; text-shadow: 0 0 10px #000;
+        content: ""; position: absolute; top: -5px; width: 100%; text-align: center;
+        color: #00e5ff; font-weight: bold; font-size: 16px; z-index: 1000;
+        text-shadow: 0 0 10px #000; pointer-events: none;
     }
-    @keyframes pulse { 0%,100% { opacity: 0.6; } 50% { opacity: 1; } }
+
+    /* Professional Corner Brackets Logic (Using background on a sibling/pseudo) */
+    .pro-corners {
+        position: absolute; top: 21px; left: 50%; transform: translateX(-50%);
+        width: 268px; height: 268px; z-index: 1001; pointer-events: none;
+    }
+    .corner { position: absolute; width: 30px; height: 30px; border: 4px solid #00e5ff; }
+    .tl { top: 0; left: 0; border-right: none; border-bottom: none; }
+    .tr { top: 0; right: 0; border-left: none; border-bottom: none; }
+    .bl { bottom: 0; left: 0; border-right: none; border-top: none; }
+    .br { bottom: 0; right: 0; border-left: none; border-top: none; }
+
+    @keyframes pulse { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
+    .grid-pulse { animation: pulse 2s infinite; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -67,7 +86,8 @@ def run_fixed_grid_extract(image_bytes, expected_center, scale_percent):
             min_d, best_c = 999.0, 'White'
             for name, (hs,ss,vs) in std_colors.items():
                 t_lab = cv2.cvtColor(cv2.cvtColor(np.uint8([[[hs,ss,vs]]]), cv2.COLOR_HSV2BGR), cv2.COLOR_BGR2LAB)[0][0]
-                dV = np.sqrt(0.1*(float(lab[0])-t_lab[0])**2 + 2.4*(float(lab[1])-t_lab[1])**2 + 2.4*(float(lab[2])-t_lab[2])**2)
+                # Use User-Optimized Weights: 0.5 for L, 2.5 for AB
+                dV = np.sqrt(0.5*(float(lab[0])-t_lab[0])**2 + 2.5*(float(lab[1])-t_lab[1])**2 + 2.5*(float(lab[2])-t_lab[2])**2)
                 if dV < min_d: min_d, best_c = dV, name
             detected[r*3+c] = best_c
             cv2.circle(debug_warped, (fx, fy), 12, (255,255,255), 2)
@@ -119,6 +139,16 @@ if app_mode == "📸 Scan & Solve":
         guide = ORIENTATION_GUIDE[curr]
         st.info(f"🧭 HOLD: {guide[0]} facing you, {guide[1]} on TOP.")
         buf = st.camera_input("P", key=f"c_{st.session_state.uploader_key_version}", label_visibility="collapsed")
+        
+        # --- 🛡️ RESTORED PRO SCANNER GUIDE (Static UI) ---
+        if st.session_state.get('show_guide', True):
+            st.markdown(f"""
+            <div class="pro-corners"><div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
+                <div style="position:absolute; top:-42px; width:100%; text-align:center; color:#00e5ff; font-weight:bold; text-shadow:0 0 10px #000;">
+                    PLACE {curr.upper()} FACE HERE<br><span style="font-size:11px; opacity:0.8;">▲ Adjacent UP face: {guide[1]}</span>
+                </div>
+            </div>""", unsafe_allow_html=True)
+
         if buf:
             d, db, ok = run_fixed_grid_extract(buf, CENTER_COLORS[curr], st.session_state.cube_size)
             if ok:
@@ -160,10 +190,28 @@ if app_mode == "📸 Scan & Solve":
         components.html(html, height=320)
 
 elif app_mode == "⚙️ Calibration":
-    st.title("⚙️ Calibration")
-    c_cal = st.radio("Target:", list(COLOR_EMOJIS.keys()), horizontal=True)
-    buf = st.camera_input("Sample")
+    st.title("⚙️ Color Calibration")
+    c_cal = st.radio("Target Color:", list(COLOR_EMOJIS.keys()), horizontal=True)
+    st.info(f"Please point at a **{c_cal}** face and click its center in the static image below to sample.")
+    
+    buf = st.camera_input("Capture Sample", key="cal_cam")
     if buf:
-        val_xy = streamlit_image_coordinates(cv2.cvtColor(cv2.imdecode(np.asarray(bytearray(buf.read()), dtype=np.uint8), 1), cv2.COLOR_BGR2RGB))
+        img_bgr = cv2.imdecode(np.asarray(bytearray(buf.read()), dtype=np.uint8), 1)
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        img_hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+        
+        # Interactive Sampling
+        val_xy = streamlit_image_coordinates(img_rgb, key="cal_click")
         if val_xy:
-            st.success(f"Sampled at {val_xy}. Save logic ready.")
+            x, y = val_xy['x'], val_xy['y']
+            sample_hsv = img_hsv[y, x].tolist()
+            
+            # Save to file
+            calibs = get_calibrated_colors()
+            calibs[c_cal] = sample_hsv
+            with open(CALIB_FILE, 'w') as f:
+                json.dump(calibs, f)
+            
+            st.success(f"✅ {c_cal} profile updated to {sample_hsv}! Returning to scan mode...")
+            st.session_state.custom_std_colors = calibs # Sync state
+            st.rerun()
