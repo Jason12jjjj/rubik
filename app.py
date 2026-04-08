@@ -127,8 +127,12 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
         
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     
-    # 💎 Feature Scraper (Multi-Threshold V2)
-    def process_contours(clist):
+    # 💎 Feature Scraper (Multi-Scale Strategy for Close-ups)
+    candidates = []
+    all_raw = []
+    rej_area, rej_shape = 0, 0
+    
+    def process_contours(clist, tag=""):
         found = []
         ra, rs = 0, 0
         for c in clist:
@@ -144,7 +148,8 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
             bgr_m = np.mean(roi_mini, axis=(0,1)) if roi_mini.size > 0 else [0,0,0]
             is_skin = (bgr_m[2] > bgr_m[1] > bgr_m[0]) and (bgr_m[2]-bgr_m[0] > 30)
 
-            if (work_h*0.005)**2 < area < (work_h*0.4)**2:
+            # INCREASED MAX AREA: Up to 0.8 of work_h for close-ups
+            if (work_h*0.005)**2 < area < (work_h*0.8)**2:
                 if ratio > 0.4 and solidity > 0.7 and extent > 0.4:
                     if not is_skin or ratio > 0.8:
                         M = cv2.moments(c)
@@ -154,24 +159,36 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
                             found.append({'cnt':c, 'center':(cx,cy), 'area':area, 'weight': 1.0/(1.0+dist_c/work_w)})
                 else: rs += 1
             else: ra += 1
-            all_raw.append({'box':(x,y,w,h), 'status': "YELLOW" if (len(found)>0 and found[-1]['cnt'] is c) else "RED"})
+            if tag != "SILENT":
+                all_raw.append({'box':(x,y,w,h), 'status': "YELLOW" if (len(found)>0 and found[-1]['cnt'] is c) else "RED"})
         return found, ra, rs
 
-    trace.append("Scan 1: Standard Adaptive...")
+    # Scan 1: Fine-grained for distant stickers
     t1 = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 13, 2)
-    cnts1, _ = cv2.findContours(t1, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    all_raw = []
-    candidates, rej_area, rej_shape = process_contours(cnts1)
+    c1, ra1, rs1 = process_contours(cv2.findContours(t1, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0])
+    candidates.extend(c1); rej_area += ra1; rej_shape += rs1
     
-    if len(candidates) < 4:
-        trace.append("Scan 1 failed. Retrying Scan 2 (Sensitive)...")
-        t2 = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 2)
-        cnts2, _ = cv2.findContours(t2, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        candidates, ra2, rs2 = process_contours(cnts2)
-        rej_area += ra2; rej_shape += rs2
+    # Scan 2: Large-scale for close-ups (BIG BlockSize)
+    trace.append("Scan 2: Large-window adaptive search for close-ups...")
+    t2 = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 81, 2)
+    c2, ra2, rs2 = process_contours(cv2.findContours(t2, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0], tag="SILENT")
+    # Add unique stickers from Scan 2
+    for cand2 in c2:
+        if not any(np.sqrt((cand2['center'][0]-c1c['center'][0])**2 + (cand2['center'][1]-c1c['center'][1])**2) < 10 for c1c in candidates):
+            candidates.append(cand2)
+    rej_area += ra2; rej_shape += rs2
 
-    if sharp < 20: trace.append("⚠️ WARNING: Image is very blurry. Please hold steady.")
-    trace.append(f"Trace: Candidates={len(candidates)} (Rejected: Area={rej_area}, Shape={rej_shape})")
+    # Scan 3: Global Otsu fallback if still empty
+    if len(candidates) < 4:
+        trace.append("Scan 1/2 failed. Retrying Scan 3: Global Otsu...")
+        _, t3 = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        c3, ra3, rs3 = process_contours(cv2.findContours(t3, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0], tag="SILENT")
+        for cand3 in c3:
+            if not any(np.sqrt((cand3['center'][0]-ca['center'][0])**2 + (cand3['center'][1]-ca['center'][1])**2) < 10 for ca in candidates):
+                candidates.append(cand3)
+
+    if sharp < 25: trace.append("⚠️ WARNING: Image is very blurry. Please hold steady.")
+    trace.append(f"Trace: Final Candidates={len(candidates)} (Rejected: Area={rej_area}, Shape={rej_shape})")
     
     best_cnt = None
     best_cluster = []
