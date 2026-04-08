@@ -100,209 +100,167 @@ st.markdown("""
 def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
     file_bytes = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, 1)
-    if img is None: return None, None, "No Image Data", {}, None
+    if img is None: return None, None, "No Data", {}, None, None, ["Fail: No image"]
     
+    trace = []
     diag_imgs = {}
     pad = 40
     img_padded = cv2.copyMakeBorder(img, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=[0, 0, 0])
     h_p, w_p = img_padded.shape[:2]
     
-    # Standardize work height for consistent metric thresholds
     work_h = 650
     work_w = int(w_p * (work_h / h_p))
     work_img = cv2.resize(img_padded, (work_w, work_h))
-    tracking_img = work_img.copy()
-
     gray = cv2.cvtColor(work_img, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     
-    # 💎 Industrial Extraction: Find all sticker candidates
+    # 💎 Feature Scraper
     thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 13, 3)
-    if show_diag: diag_imgs['Feature Map'] = thresh
     cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    trace.append(f"Found {len(cnts)} raw contours.")
     
     candidates = []
+    all_raw = [] # For diagnostic map
     for c in cnts:
         area = cv2.contourArea(c)
-        if (work_h*0.01)**2 < area < (work_h*0.3)**2:
-            x, y, w, h = cv2.boundingRect(c)
-            ratio = min(w, h) / max(w, h)
+        x, y, w, h = cv2.boundingRect(c)
+        ratio = min(w, h) / max(w, h) if max(w, h) > 0 else 0
+        
+        status = "RED" # Default reject
+        if (work_h*0.005)**2 < area < (work_h*0.35)**2:
             if ratio > 0.4:
+                status = "YELLOW" # Potential
                 M = cv2.moments(c)
                 if M["m00"] > 0:
-                    cx = int(M["m10"] / M["m00"])
-                    cy = int(M["m01"] / M["m00"])
-                    candidates.append({'cnt': c, 'center': (cx, cy), 'area': area})
+                    candidates.append({'cnt': c, 'center': (int(M["m10"]/M["m00"]), int(M["m01"]/M["m00"])), 'area': area})
+        all_raw.append({'box': (x,y,w,h), 'status': status})
 
-    best_cnt = None
-    pass_info = f"Found {len(candidates)} features."
+    trace.append(f"Filtered to {len(candidates)} squares (Ratio > 0.4, Area checked).")
     
-    # 💎 Grid Discovery: Find the dense cluster of 9 stickers
-    if len(candidates) >= 4:
-        # 1. Dist Matrix & Clustering (Simple Radius-based logic)
-        best_cluster = []
-        max_density = 0
-        
-        # Calculate avg candidate width for distance thresholding
-        avg_w = np.mean([np.sqrt(c['area']) for c in candidates])
-        threshold_dist = avg_w * 2.5 # Max distance to be considered a 'neighbor'
+    best_cnt = None
+    best_cluster = []
+    pass_info = "Searching..."
 
+    if len(candidates) >= 4:
+        # Cluster logic
+        max_density = 0
+        avg_w = np.mean([np.sqrt(c['area']) for c in candidates])
+        threshold_dist = avg_w * 2.8
         pts = np.array([c['center'] for c in candidates])
+        
         for i in range(len(candidates)):
-            # Find neighbors for candidate i
             cluster = [candidates[i]]
             for j in range(len(candidates)):
                 if i == j: continue
                 d = np.sqrt(np.sum((pts[i] - pts[j])**2))
                 if d < threshold_dist: cluster.append(candidates[j])
             
-            # Density Score: Bonus for being close to 9
             score = len(cluster)
-            if score == 9: score += 10 # Strong signal
-            
+            if score >= 9: score += 10
             if score > max_density:
-                max_density = score
-                best_cluster = cluster
-
+                max_density, best_cluster = score, cluster
+        
+        trace.append(f"Best cluster: {len(best_cluster)} stickers. Density score: {max_density}")
+        
         if len(best_cluster) >= 4:
             cluster_pts = np.array([c['center'] for c in best_cluster])
             hull = cv2.convexHull(cluster_pts)
-            peri = cv2.arcLength(hull, True)
-            approx = cv2.approxPolyDP(hull, 0.04 * peri, True)
+            approx = cv2.approxPolyDP(hull, 0.04 * cv2.arcLength(hull, True), True)
             
-            area = cv2.contourArea(cluster_pts) if len(cluster_pts) < 3 else cv2.contourArea(hull)
-            area_pct = (area / (work_h*work_w)) * 100
-            
+            # Map winners to GREEN in Candidate Map
+            cluster_centers = [tuple(c['center']) for c in best_cluster]
+            for r in all_raw:
+                rx, ry, rw, rh = r['box']
+                cx, cy = rx + rw//2, ry + rh//2
+                if any(np.sqrt((cx-ccx)**2 + (cy-ccy)**2) < 5 for ccx, ccy in cluster_centers):
+                    r['status'] = "GREEN"
+
             if len(approx) == 4:
                 best_cnt = approx.reshape(4, 2)
-                pass_info = f"Cluster Locked: {len(best_cluster)} stks (Density={max_density})."
+                pass_info = f"Grid Locked ({len(best_cluster)} stks)"
             else:
                 (cx, cy), (w, h), angle = cv2.minAreaRect(cluster_pts)
-                mpts = cv2.boxPoints(((cx, cy), (w, h), angle))
-                best_cnt = np.int32(mpts)
-                pass_info = f"Cluster Fallback: {len(best_cluster)} stks (Area={area_pct:.1f}%)."
+                best_cnt = np.int32(cv2.boxPoints(((cx, cy), (w, h), angle)))
+                pass_info = f"Grid Fallback ({len(best_cluster)} stks)"
 
-    # Final Fallback to Edge Detection if stickers are too faint
-    if best_cnt is None:
-        edges = cv2.dilate(cv2.Canny(blurred, 20, 100), np.ones((5,5), np.uint8))
-        if show_diag: diag_imgs['Edge Guide'] = edges
-        cnts_e, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        max_a = 0
-        for ce in cnts_e:
-            area = cv2.contourArea(ce)
-            if (work_h*work_w * 0.005) < area < (work_h*work_w * 0.85):
-                hull_e = cv2.convexHull(ce)
-                approx_e = cv2.approxPolyDP(hull_e, 0.05 * cv2.arcLength(hull_e, True), True)
-                if len(approx_e) == 4:
-                    best_cnt = approx_e.reshape(4, 2)
-                    pass_info = "Outline Locked (Pass 2)"
-                    break
+    # Create Candidate Map
+    cand_img = work_img.copy()
+    for r in all_raw:
+        x, y, w, h = r['box']
+        color = (0,0,255) if r['status']=="RED" else ((0,255,255) if r['status']=="YELLOW" else (0,255,0))
+        thick = 2 if r['status']=="GREEN" else 1
+        cv2.rectangle(cand_img, (x, y), (x+w, y+h), color, thick)
+    if show_diag: diag_imgs['Candidates Map'] = cv2.cvtColor(cand_img, cv2.COLOR_BGR2RGB)
 
-    if best_cnt is None: return None, None, pass_info, diag_imgs, None
+    if best_cnt is None: 
+        trace.append("Detection Failed: No valid cluster found.")
+        return None, None, pass_info, diag_imgs, None, None, trace
 
-    # --- Precise Homography Pass ---
-    # Map from Work Image to Padded Image coords
+    # --- Refinement & Metrics ---
     scale = h_p / work_h
-    best_cnt_p = (best_cnt.astype("float32") * scale)
-    
-    # Sort corners (TL, TR, BR, BL)
+    rect_p = (best_cnt.astype("float32") * scale)
+    # Sort corners
     rect = np.zeros((4, 2), dtype="float32")
-    s = best_cnt_p.sum(axis=1)
-    rect[0], rect[2] = best_cnt_p[np.argmin(s)], best_cnt_p[np.argmax(s)]
-    diff = np.diff(best_cnt_p, axis=1)
-    rect[1], rect[3] = best_cnt_p[np.argmin(diff)], best_cnt_p[np.argmax(diff)]
+    s = rect_p.sum(axis=1); rect[0], rect[2] = rect_p[np.argmin(s)], rect_p[np.argmax(s)]
+    diff = np.diff(rect_p, axis=1); rect[1], rect[3] = rect_p[np.argmin(diff)], rect_p[np.argmax(diff)]
     
     dst = np.array([[0,0], [299,0], [299,299], [0,299]], dtype="float32")
     M = cv2.getPerspectiveTransform(rect, dst)
     warped = cv2.warpPerspective(img_padded, M, (300, 300))
     debug_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB)
     
-    # --- Deep Alignment Refinement (Saturation Centroids) ---
     std_colors = get_calibrated_colors()
     detected = ['White'] * 9
-    refined_pts_warped = [] 
-    hsv_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)
-    sat_map = hsv_warped[:,:,1]
-    
-    grid_metrics = [] # Meta for transparency
+    refined_pts = []
+    hsv_w = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)
+    sat_w = hsv_w[:,:,1]
+    metrics = []
     
     for r in range(3):
         for c in range(3):
             tx, ty = int((c+0.5)*100), int((r+0.5)*100)
             win = 35
             y1, y2, x1, x2 = max(0,ty-win), min(300,ty+win), max(0,tx-win), min(300,tx+win)
-            roi_sat = sat_map[y1:y2, x1:x2]
-            moms = cv2.moments(roi_sat)
-            
-            snap_dx, snap_dy = 0, 0
+            moms = cv2.moments(sat_w[y1:y2, x1:x2])
+            sdx, sdy = 0, 0
             if moms["m00"] > 50:
                 sx, sy = x1 + int(moms["m10"]/moms["m00"]), y1 + int(moms["m01"]/moms["m00"])
-                dist_snap = np.sqrt((sx-tx)**2 + (sy-ty)**2)
-                if dist_snap < 30:
+                if np.sqrt((sx-tx)**2 + (sy-ty)**2) < 30:
                     final_x, final_y = sx, sy
-                    snap_dx, snap_dy = sx - tx, sy - ty
-                else: 
-                    final_x, final_y = tx, ty
-            else:
-                final_x, final_y = tx, ty
+                    sdx, sdy = sx-tx, sy-ty
+                else: final_x, final_y = tx, ty
+            else: final_x, final_y = tx, ty
             
-            refined_pts_warped.append((final_x, final_y))
+            refined_pts.append((final_x, final_y))
             roi = warped[final_y-6:final_y+6, final_x-6:final_x+6]
-            bgr_avg = np.median(roi, axis=(0,1)).astype(np.uint8) if roi.size > 0 else [0,0,0]
-            lab = cv2.cvtColor(np.uint8([[[bgr_avg[0], bgr_avg[1], bgr_avg[2]]]]), cv2.COLOR_BGR2LAB)[0][0]
+            bgr = np.median(roi, axis=(0,1)).astype(np.uint8) if roi.size > 0 else [0,0,0]
+            lab = cv2.cvtColor(np.uint8([[[bgr[0],bgr[1],bgr[2]]]]), cv2.COLOR_BGR2LAB)[0][0]
             
-            # --- Color Scoring & Metadata ---
             dists = {}
-            min_d, best_c = float('inf'), 'White'
+            min_d, best_c = 999.0, 'White'
             for name, (hs,ss,vs) in std_colors.items():
                 sl = cv2.cvtColor(cv2.cvtColor(np.uint8([[[hs,ss,vs]]]), cv2.COLOR_HSV2BGR), cv2.COLOR_BGR2LAB)[0][0]
-                dL, da, db = float(lab[0])-float(sl[0]), float(lab[1])-float(sl[1]), float(lab[2])-float(sl[2])
-                d_val = np.round(np.sqrt(0.1*(dL**2) + 2.0*(da**2) + 2.0*(db**2)), 1)
-                dists[name] = d_val
-                if d_val < min_d: min_d, best_c = d_val, name
+                dV = np.round(np.sqrt(0.1*(float(lab[0])-sl[0])**2 + 2.0*(float(lab[1])-sl[1])**2 + 2.0*(float(lab[2])-sl[2])**2), 1)
+                dists[name] = dV
+                if dV < min_d: min_d, best_c = dV, name
             
             detected[r*3+c] = best_c
-            grid_metrics.append({
-                'slot': r*3+c,
-                'final_color': best_c,
-                'distances': dists,
-                'snap_offset': (snap_dx, snap_dy),
-                'confidence': np.round(100 - min_d, 1)
-            })
-            
-            short = f"{COLOR_EMOJIS[best_c][0]}"
+            metrics.append({'slot': r*3+c, 'final_color': best_c, 'distances': dists, 'snap_offset': (sdx, sdy), 'confidence': np.round(100 - min_d, 1)})
             cv2.circle(debug_warped, (final_x, final_y), 6, (255,255,255), 1)
-            cv2.putText(debug_warped, f"{best_c[0]}", (final_x-5, final_y+5), 0, 0.4, (255,255,255), 1, cv2.LINE_AA)
+            cv2.putText(debug_warped, best_c[0], (final_x-5, final_y+5), 0, 0.4, (255,255,255), 1)
 
-    # --- AR Overlay (Full Resolution Feature-Locked) ---
-    best_cnt_scale = (best_cnt.astype("float32") * (h_p / work_h))
-    pts_w = best_cnt_scale.reshape(4, 2)
-    s = pts_w.sum(axis=1)
-    diff = np.diff(pts_w, axis=1)
-    rect_w = np.zeros((4, 2), dtype="float32")
-    rect_w[0], rect_w[2] = pts_w[np.argmin(s)], pts_w[np.argmax(s)]
-    rect_w[1], rect_w[3] = pts_w[np.argmin(diff)], pts_w[np.argmax(diff)]
-    M_inv_full = cv2.getPerspectiveTransform(dst, rect_w)
-    
+    # AR High-Res
+    M_inv = cv2.getPerspectiveTransform(dst, (best_cnt.astype("float32") * scale))
     ar_img = img_padded.copy()
-    draw_map = {'White': (255,255,255), 'Yellow': (0,255,255), 'Orange': (0,165,255), 'Red': (0,0,255), 'Green': (0,255,0), 'Blue': (255,0,0)}
-    dot_radius = max(4, int(h_p / 150))
-    font_scale = h_p / 1200.0
-
-    for i, (fx, fy) in enumerate(refined_pts_warped):
-        p_orig = cv2.perspectiveTransform(np.array([[[fx, fy]]], dtype="float32"), M_inv_full)
+    trace.append("AR projection calibrated and applied.")
+    for i, (fx, fy) in enumerate(refined_pts):
+        p_orig = cv2.perspectiveTransform(np.array([[[fx, fy]]], dtype="float32"), M_inv)
         px, py = int(p_orig[0][0][0]), int(p_orig[0][0][1])
-        c_name = detected[i]
-        bgr = draw_map.get(c_name, (0, 255, 0))
-        cv2.circle(ar_img, (px, py), dot_radius, bgr, -1)
-        cv2.circle(ar_img, (px, py), dot_radius + 2, (255,255,255), max(1, int(dot_radius/4)))
-        label_pos = (px + dot_radius + 5, py + dot_radius + 5)
-        cv2.putText(ar_img, c_name[0], label_pos, 0, font_scale, (0,0,0), int(font_scale*4), cv2.LINE_AA)
-        cv2.putText(ar_img, c_name[0], label_pos, 0, font_scale, (255,255,255), int(font_scale*2), cv2.LINE_AA)
+        cv2.circle(ar_img, (px, py), int(h_p/150), (255,255,255), -1)
+        cv2.putText(ar_img, detected[i][0], (px+10, py+10), 0, h_p/1200, (255,255,255), 2)
 
-    final_ar = ar_img[pad:pad+h_p-2*pad, pad:pad+w_p-2*pad]
     detected[4] = expected_center
-    return detected, debug_warped, pass_info, diag_imgs, cv2.cvtColor(final_ar, cv2.COLOR_BGR2RGB), grid_metrics
+    return detected, debug_warped, pass_info, diag_imgs, cv2.cvtColor(ar_img[pad:-pad, pad:-pad], cv2.COLOR_BGR2RGB), metrics, trace
 
 def run_manual_grid_extract(image_bytes, expected_center, scale_percent):
     file_bytes = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
@@ -450,8 +408,8 @@ if app_mode == "📸 Scan & Solve":
                 
                 if st.session_state.auto_detect:
                     res = auto_detect_cube_face(act, CENTER_COLORS[curr], show_diag=st.session_state.get('show_diag'))
-                    # Unpack 6 values: detected, debug_warped, info, diag_imgs, track_img, grid_metrics
-                    d, db, info, diags, track, metrics = res if len(res) == 6 else (None, None, "API Error", {}, None, None)
+                    # Unpack 7 values: d, db, info, diags, track, metrics, trace
+                    d, db, info, diags, track, metrics, trace = res if len(res) == 7 else (None, None, "API Error", {}, None, None, ["Error: Index mismatch"])
                     success = (d is not None)
                     
                     if success:
@@ -461,27 +419,33 @@ if app_mode == "📸 Scan & Solve":
                         with r_col: st.image(db, caption="📸 Color Result", use_container_width=True)
                         st.success(msg_success)
                         
-                        # 🔬 NEW: High-Transparency Diagnostic HUD
-                        if st.session_state.get('show_diag') and metrics:
-                            with st.expander("🔬 🔬 View Detailed Vision Metrics (HUD)", expanded=True):
-                                st.markdown("### 🧬 3x3 Grid Analysis")
-                                df_data = []
-                                for m in metrics:
-                                    row = {"Slot": m['slot']+1, "Color": m['final_color'], "Snap_XY": f"{m['snap_offset']}", "Conf%": m['confidence']}
-                                    # Add all 6 color distances
-                                    for color_name, dist in m['distances'].items():
-                                        row[f"d({color_name[0]})"] = dist
-                                    df_data.append(row)
-                                st.table(df_data)
-                                st.caption("💡 **Legend:** d(C) = Delta-E Distance (lower is closer). Snap_XY = offset from theoretical center.")
-                        
+                        if st.session_state.get('show_diag'):
+                            # HUD 1: Process Trace
+                            if trace:
+                                with st.expander("📝 View Process Trace Log", expanded=True):
+                                    st.code("\n".join([f"> {l}" for l in trace]), language="markdown")
+                            
+                            # HUD 2: Detailed Metrics Table
+                            if metrics:
+                                with st.expander("🔬 View Detailed Color Metrics", expanded=False):
+                                    df_data = []
+                                    for m in metrics:
+                                        row = {"Slot": m['slot']+1, "Color": m['final_color'], "Conf%": m['confidence']}
+                                        for c_name, dist in m['distances'].items(): row[f"d({c_name[0]})"] = dist
+                                        df_data.append(row)
+                                    st.table(df_data)
                     else:
                         st.error(f"❌ Cube not found. (Diag: {info})")
-                        if st.session_state.get('show_diag') and diags:
-                            st.write("### 🖼️ Intermediate CV Steps")
-                            dcols = st.columns(len(diags))
-                            for i, (name, img) in enumerate(diags.items()):
-                                with dcols[i]: st.image(img, caption=name, use_container_width=True)
+                        if st.session_state.get('show_diag'):
+                            if trace: st.warning("\n".join(trace))
+                        
+                    # Show all diagnostics images (Feature Map, Candidates, Edges, etc)
+                    if st.session_state.get('show_diag') and diags:
+                        st.info("🖼️ **Diagnostic Intermediate Steps**")
+                        n_diags = len(diags)
+                        dcols = st.columns(n_diags)
+                        for i, (name, img) in enumerate(diags.items()):
+                            with dcols[i]: st.image(img, caption=name, use_container_width=True)
                 else:
                     d, db, success = run_manual_grid_extract(act, CENTER_COLORS[curr], st.session_state.cube_size)
                     info = "Manual"
