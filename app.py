@@ -131,11 +131,16 @@ def auto_detect_cube_face(image_bytes, expected_center):
             if 0.25 < w/max(1,h) < 4.0: 
                 stks.append(c)
 
+    total_area = work_h * work_w
     if len(stks) >= 4:
         # Use Rotated Bounding Box (minAreaRect)
         combined = np.vstack(stks)
         (cx, cy), (w, h), angle = cv2.minAreaRect(combined)
         
+        # Upper Bound Check: Reject if box covers > 85% of image
+        if (w * h) > total_area * 0.85:
+            return None, None, False
+            
         # Manual calculation of box points: TL, TR, BR, BL
         theta = angle * np.pi / 180.0
         cos_t, sin_t = np.cos(theta), np.sin(theta)
@@ -158,7 +163,8 @@ def auto_detect_cube_face(image_bytes, expected_center):
         max_area = 0
         for cnt in cnts:
             area = cv2.contourArea(cnt)
-            if area > (work_h*0.2)**2:
+            # Area Constraints: 20% < area < 85%
+            if (work_h*0.2)**2 < area < (total_area * 0.85):
                 peri = cv2.arcLength(cnt, True)
                 appr = cv2.approxPolyDP(cnt, 0.04 * peri, True)
                 if len(appr) == 4 and area > max_area:
