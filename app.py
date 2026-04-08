@@ -107,6 +107,7 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
     img_padded = cv2.copyMakeBorder(img, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=[0, 0, 0])
     h_p, w_p = img_padded.shape[:2]
     
+    # Standardize work height for consistent metric thresholds
     work_h = 650
     work_w = int(w_p * (work_h / h_p))
     work_img = cv2.resize(img_padded, (work_w, work_h))
@@ -115,169 +116,160 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
     gray = cv2.cvtColor(work_img, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     
+    # 💎 Industrial Extraction: Find all sticker candidates
+    thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 13, 3)
+    if show_diag: diag_imgs['Feature Map'] = thresh
+    cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    candidates = []
+    for c in cnts:
+        area = cv2.contourArea(c)
+        if (work_h*0.01)**2 < area < (work_h*0.3)**2:
+            x, y, w, h = cv2.boundingRect(c)
+            ratio = min(w, h) / max(w, h)
+            if ratio > 0.4:
+                M = cv2.moments(c)
+                if M["m00"] > 0:
+                    cx = int(M["m10"] / M["m00"])
+                    cy = int(M["m01"] / M["m00"])
+                    candidates.append({'cnt': c, 'center': (cx, cy), 'area': area})
+
     best_cnt = None
-    pass_info = "Waiting..."
+    pass_info = f"Found {len(candidates)} features."
     
-    # --- Pass 1: Sticker-Based Detection ---
-    thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
-    if show_diag: diag_imgs['Pass 1 (Stickers)'] = thresh
-    cnts_s, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    stks = []
-    for c in cnts_s:
-        a = cv2.contourArea(c)
-        if (work_h*0.02)**2 < a < (work_h*0.4)**2:
-            x,y,w,h = cv2.boundingRect(c)
-            if 0.25 < w/max(1,h) < 4.0: stks.append(c)
-
-    total_area = work_h * work_w
-    if len(stks) >= 4:
-        combined = np.vstack(stks)
-        hull = cv2.convexHull(combined)
+    # 💎 Grid Discovery: Find the best 3x3 cluster
+    if len(candidates) >= 4:
+        # Sort candidates to find clusters (naive spatial clustering)
+        # We look for a group that forms a quadrilateral
+        all_pts = np.array([c['center'] for c in candidates])
+        hull = cv2.convexHull(all_pts)
         peri = cv2.arcLength(hull, True)
-        appp = cv2.approxPolyDP(hull, 0.02 * peri, True)
+        approx = cv2.approxPolyDP(hull, 0.04 * peri, True)
         
-        if len(appp) == 4:
-            area = cv2.contourArea(appp)
-            area_pct = (area / total_area) * 100
-            pass_info = f"Pass 1: {len(stks)} stks. Area={area_pct:.1f}%"
-            # Relaxed Area Limit: 0.5% to 80%
-            if (total_area * 0.005 < area < total_area * 0.85):
-                best_cnt = appp.reshape(4, 2)
+        if len(approx) == 4:
+            area = cv2.contourArea(approx)
+            if (work_h*work_w * 0.005) < area < (work_h*work_w * 0.85):
+                best_cnt = approx.reshape(4, 2)
+                pass_info = f"Grid Locked: {len(candidates)} features in area."
         else:
-            (cx, cy), (w, h), angle = cv2.minAreaRect(combined)
-            area = w * h
-            if (total_area * 0.005 < area < total_area * 0.85):
-                theta = angle * np.pi / 180.0
-                cos_t, sin_t = np.cos(theta), np.sin(theta)
-                pts_rect = np.array([[-w/2, -h/2], [w/2, -h/2], [w/2, h/2], [-w/2, h/2]])
-                best_cnt = np.array([[cx + p[0]*cos_t - p[1]*sin_t, cy + p[0]*sin_t + p[1]*cos_t] for p in pts_rect]).astype(np.int32)
-                pass_info = f"Pass 1: Rect Fallback ({len(stks)} stks). Area={(area/total_area)*100:.1f}%"
-    else:
-        pass_info = f"Pass 1 Fail: {len(stks)} stks."
+            # Fallback to largest bounding box of features
+            (cx, cy), (w, h), angle = cv2.minAreaRect(all_pts)
+            if (work_h*work_w * 0.005) < (w*h) < (work_h*work_w * 0.85):
+                mpts = cv2.boxPoints(((cx, cy), (w, h), angle))
+                best_cnt = np.int32(mpts)
+                pass_info = f"Grid Fallback: {len(candidates)} features."
 
-    # --- Pass 2: Edge-Based Detection (Enhanced Dilation) ---
+    # Final Fallback to Edge Detection if stickers are too faint
     if best_cnt is None:
         edges = cv2.dilate(cv2.Canny(blurred, 20, 100), np.ones((5,5), np.uint8))
-        if show_diag: diag_imgs['Pass 2 (Edges)'] = edges
-        cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if show_diag: diag_imgs['Edge Guide'] = edges
+        cnts_e, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         max_a = 0
-        p2_notes = "No edges found"
-        for cnt in cnts:
-            x, y, wc, hc = cv2.boundingRect(cnt)
-            # Relax border defense to 5px
-            if x < 5 or y < 5 or (x+wc) > (work_w-5) or (y+hc) > (work_h-5): 
-                continue
-            
-            area = cv2.contourArea(cnt)
-            area_pct = (area / total_area) * 100
-            
-            # Record largest for diagnostics
-            if area > max_a: p2_notes = f"P2: Best candidate Area={area_pct:.1f}%"
-            
-            if (total_area * 0.005 < area < total_area * 0.85):
-                hull = cv2.convexHull(cnt)
-                appr = cv2.approxPolyDP(hull, 0.03 * cv2.arcLength(hull, True), True)
-                
-                # Success if 4 points OR fallback to minAreaRect for "blob" shapes
-                if len(appr) == 4:
-                    _, (bw, bh), _ = cv2.minAreaRect(appr)
-                    ratio = min(bw, bh) / max(bw, bh) if max(bw, bh) > 0 else 0
-                    if area > max_a and ratio > 0.2:
-                        max_a, best_cnt = area, appr.reshape(4, 2)
-                        pass_info = f"P2: Quad match. Area={area_pct:.1f}%"
-                else:
-                    # BRUTE FORCE FALLBACK: Use minAreaRect for any cube-like candidate
-                    (mcx, mcy), (mw, mh), mangle = cv2.minAreaRect(cnt)
-                    mratio = min(mw, mh) / max(mw, mh) if max(mw, mh) > 0 else 0
-                    if area > max_a and mratio > 0.4:
-                        theta = mangle * np.pi / 180.0
-                        cos_t, sin_t = np.cos(theta), np.sin(theta)
-                        pw, ph = mw/2, mh/2
-                        mpts = np.array([[-pw, -ph], [pw, -ph], [pw, ph], [-pw, ph]])
-                        best_cnt = np.array([[mcx + p[0]*cos_t - p[1]*sin_t, mcy + p[0]*sin_t + p[1]*cos_t] for p in mpts]).astype(np.int32)
-                        max_a = area
-                        pass_info = f"P2: RotBox fallback. Area={area_pct:.1f}%"
-        
-        if best_cnt is None: pass_info = f"{pass_info} | {p2_notes}"
+        for ce in cnts_e:
+            area = cv2.contourArea(ce)
+            if (work_h*work_w * 0.005) < area < (work_h*work_w * 0.85):
+                hull_e = cv2.convexHull(ce)
+                approx_e = cv2.approxPolyDP(hull_e, 0.05 * cv2.arcLength(hull_e, True), True)
+                if len(approx_e) == 4:
+                    best_cnt = approx_e.reshape(4, 2)
+                    pass_info = "Outline Locked (Pass 2)"
+                    break
 
     if best_cnt is None: return None, None, pass_info, diag_imgs, None
 
-    # --- Perspective Warping ---
-    pts_padded = (best_cnt.reshape(4, 2) * (h_p / work_h)).astype("float32")
-    rect = np.zeros((4, 2), dtype="float32")
-    s = pts_padded.sum(axis=1)
-    rect[0], rect[2] = pts_padded[np.argmin(s)], pts_padded[np.argmax(s)]
-    diff = np.diff(pts_padded, axis=1)
-    rect[1], rect[3] = pts_padded[np.argmin(diff)], pts_padded[np.argmax(diff)]
-    dst = np.array([[0,0], [299,0], [299,299], [0,299]], dtype="float32")
+    # --- Precise Homography Pass ---
+    # Map from Work Image to Padded Image coords
+    scale = h_p / work_h
+    best_cnt_p = (best_cnt.astype("float32") * scale)
     
+    # Sort corners (TL, TR, BR, BL)
+    rect = np.zeros((4, 2), dtype="float32")
+    s = best_cnt_p.sum(axis=1)
+    rect[0], rect[2] = best_cnt_p[np.argmin(s)], best_cnt_p[np.argmax(s)]
+    diff = np.diff(best_cnt_p, axis=1)
+    rect[1], rect[3] = best_cnt_p[np.argmin(diff)], best_cnt_p[np.argmax(diff)]
+    
+    dst = np.array([[0,0], [299,0], [299,299], [0,299]], dtype="float32")
     M = cv2.getPerspectiveTransform(rect, dst)
     warped = cv2.warpPerspective(img_padded, M, (300, 300))
     debug_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB)
     
-    # --- Deep Alignment Refinement (Saturation Centroids) ---
+    # 💎 Deep Refinement: 9-Point Discovery
     std_colors = get_calibrated_colors()
     detected = ['White'] * 9
-    refined_pts_warped = [] 
+    refined_pts_warped = []
     hsv_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)
     sat_map = hsv_warped[:,:,1]
     
     for r in range(3):
         for c in range(3):
-            target_cx, target_cy = int((c+0.5)*100), int((r+0.5)*100)
-            win = 30
-            y1, y2 = max(0, target_cy-win), min(300, target_cy+win)
-            x1, x2 = max(0, target_cx-win), min(300, target_cx+win)
+            tx, ty = int((c+0.5)*100), int((r+0.5)*100)
+            # Local Centroid Snap
+            win = 35
+            y1, y2, x1, x2 = max(0,ty-win), min(300,ty+win), max(0,tx-win), min(300,tx+win)
             roi_sat = sat_map[y1:y2, x1:x2]
-            moments = cv2.moments(roi_sat)
-            if moments["m00"] > 100:
-                snap_x = x1 + int(moments["m10"] / moments["m00"])
-                snap_y = y1 + int(moments["m01"] / moments["m00"])
-                dist = np.sqrt((snap_x - target_cx)**2 + (snap_y - target_cy)**2)
-                final_cx, final_cy = (snap_x, snap_y) if dist < 25 else (target_cx, target_cy)
+            mom = cv2.moments(roi_sat)
+            if mom["m00"] > 50:
+                snap_x, snap_y = x1 + int(mom["m10"]/mom["m00"]), y1 + int(mom["m01"]/mom["m00"])
+                dist = np.sqrt((snap_x-tx)**2 + (snap_y-ty)**2)
+                final_x, final_y = (snap_x, snap_y) if dist < 30 else (tx, ty)
             else:
-                final_cx, final_cy = target_cx, target_cy
+                final_x, final_y = tx, ty
             
-            refined_pts_warped.append((final_cx, final_cy))
-            roi = warped[final_cy-18:final_cy+18, final_cx-18:final_cx+18]
+            refined_pts_warped.append((final_x, final_y))
+            
+            # Sampling with Robust ROI
+            roi = warped[final_y-15:final_y+15, final_x-15:final_x+15]
             if roi.size == 0: continue
             bgr_avg = np.median(roi, axis=(0,1)).astype(np.uint8)
             lab = cv2.cvtColor(np.uint8([[[bgr_avg[0], bgr_avg[1], bgr_avg[2]]]]), cv2.COLOR_BGR2LAB)[0][0]
+            
             min_d, best_c = float('inf'), 'White'
-            for name, (hs, ss, vs) in std_colors.items():
+            for name, (hs,ss,vs) in std_colors.items():
                 sl = cv2.cvtColor(cv2.cvtColor(np.uint8([[[hs,ss,vs]]]), cv2.COLOR_HSV2BGR), cv2.COLOR_BGR2LAB)[0][0]
                 dL, da, db = float(lab[0])-float(sl[0]), float(lab[1])-float(sl[1]), float(lab[2])-float(sl[2])
                 d = np.sqrt(0.2*(dL**2) + 1.5*(da**2) + 1.5*(db**2))
                 if d < min_d: min_d, best_c = d, name
+            
             detected[r*3+c] = best_c
             short = f"{COLOR_EMOJIS[best_c][0]}{best_c[0]}"
-            cv2.circle(debug_warped, (final_cx, final_cy), 15, (255,255,255), 2)
-            cv2.putText(debug_warped, short, (final_cx-20, final_cy+40), 0, 0.45, (0,0,0), 2, cv2.LINE_AA)
-            cv2.putText(debug_warped, short, (final_cx-20, final_cy+40), 0, 0.45, (255,255,255), 1, cv2.LINE_AA)
+            cv2.circle(debug_warped, (final_x, final_y), 10, (255,255,255), 1)
+            cv2.putText(debug_warped, short, (final_x-15, final_y+25), 0, 0.4, (0,0,0), 2, cv2.LINE_AA)
+            cv2.putText(debug_warped, short, (final_x-15, final_y+25), 0, 0.4, (255,255,255), 1, cv2.LINE_AA)
 
-    # --- AR Overlay (Refined Projection) ---
-    pts_w = best_cnt.reshape(4, 2).astype("float32")
-    s = pts_w.sum(axis=1)
-    diff = np.diff(pts_w, axis=1)
-    rect_w = np.zeros((4, 2), dtype="float32")
-    rect_w[0], rect_w[2] = pts_w[np.argmin(s)], pts_w[np.argmax(s)]
-    rect_w[1], rect_w[3] = pts_w[np.argmin(diff)], pts_w[np.argmax(diff)]
-    M_inv = cv2.getPerspectiveTransform(dst, rect_w)
+    # --- AR Overlay (Full Resolution Feature-Locked) ---
+    # Map from 300x300 warped space directly back to the FULL RESOLUTION padded image
+    # Note: best_cnt_p is already scaled to img_padded resolution
+    M_inv_full = cv2.getPerspectiveTransform(dst, best_cnt_p)
     
+    # We will draw on a full-res version of the original image
+    ar_img = img_padded.copy()
     draw_map = {'White': (255,255,255), 'Yellow': (0,255,255), 'Orange': (0,165,255), 'Red': (0,0,255), 'Green': (0,255,0), 'Blue': (255,0,0)}
+    
+    # Dynamic point sizing based on resolution (avoid tiny dots on 4K)
+    dot_radius = max(4, int(h_p / 150))
+    font_scale = h_p / 1200.0
+
     for i, (fx, fy) in enumerate(refined_pts_warped):
-        p_orig = np.int32(cv2.perspectiveTransform(np.array([[[fx, fy]]], dtype="float32"), M_inv))
-        px, py = p_orig[0][0][0], p_orig[0][0][1]
+        p_orig = cv2.perspectiveTransform(np.array([[[fx, fy]]], dtype="float32"), M_inv_full)
+        px, py = int(p_orig[0][0][0]), int(p_orig[0][0][1])
         c_name = detected[i]
         bgr = draw_map.get(c_name, (0, 255, 0))
-        cv2.circle(tracking_img, (px, py), 4, bgr, -1)
-        cv2.circle(tracking_img, (px, py), 5, (255,255,255), 1)
-        cv2.putText(tracking_img, c_name[0], (px+8, py+8), 0, 0.35, (0,0,0), 2, cv2.LINE_AA)
-        cv2.putText(tracking_img, c_name[0], (px+8, py+8), 0, 0.35, (255,255,255), 1, cv2.LINE_AA)
+        
+        # Draw on FULL RESOLUTION image
+        cv2.circle(ar_img, (px, py), dot_radius, bgr, -1)
+        cv2.circle(ar_img, (px, py), dot_radius + 2, (255,255,255), max(1, int(dot_radius/4)))
+        
+        # Add text label nearby
+        label_pos = (px + dot_radius + 5, py + dot_radius + 5)
+        cv2.putText(ar_img, c_name[0], label_pos, 0, font_scale, (0,0,0), int(font_scale*4), cv2.LINE_AA)
+        cv2.putText(ar_img, c_name[0], label_pos, 0, font_scale, (255,255,255), int(font_scale*2), cv2.LINE_AA)
+
+    # Crop the padding back out to get original resolution image
+    final_ar = ar_img[pad:pad+h_p-2*pad, pad:pad+w_p-2*pad]
 
     detected[4] = expected_center
-    return detected, debug_warped, pass_info, diag_imgs, cv2.cvtColor(tracking_img, cv2.COLOR_BGR2RGB)
+    return detected, debug_warped, pass_info, diag_imgs, cv2.cvtColor(final_ar, cv2.COLOR_BGR2RGB)
 
 def run_manual_grid_extract(image_bytes, expected_center, scale_percent):
     file_bytes = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
