@@ -98,43 +98,50 @@ st.markdown("""
 
 # ── ADVANCED COMPUTER VISION (WARP PERSPECTIVE VERSION) ──────────────────────
 def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
+    # --- 1. PRE-PHASE: DECODE & SCREENING ---
     file_bytes = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, 1)
-    if img is None: return None, None, "No Data", {}, None, None, ["Fail: No image"]
+    if img is None: 
+        return None, None, "No Data", {}, None, None, ["Fail: No image"]
     
-    trace = []
-    diag_imgs = {}
     pad = 40
     img_padded = cv2.copyMakeBorder(img, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=[0, 0, 0])
     h_p, w_p = img_padded.shape[:2]
     
-    # Standardize work height
+    # Init variables to avoid UnboundLocalError
+    trace = []
+    diag_imgs = {}
+    best_cluster = []
+    med_w = 40.0
+    max_score = 0.0
+    best_reg_score = 0.0
+    cluster_coverage = 0.0
+    pass_info = "Searching..."
+    
+    # Downscale for processing speed
     work_h = 650
     work_w = int(w_p * (work_h / h_p))
     work_img = cv2.resize(img_padded, (work_w, work_h))
     gray = cv2.cvtColor(work_img, cv2.COLOR_BGR2GRAY)
     
-    # 📸 ENVIRONMENT SENSING & ENHANCEMENT
+    # Environment Sensing
     bright = np.mean(gray)
     sharp = cv2.Laplacian(gray, cv2.CV_64F).var()
     trace.append(f"📸 Env: Brightness={bright:.1f}, Sharpness={sharp:.1f}")
     
-    # Auto-Enhance if needed
     if bright < 65 or bright > 220:
         trace.append("⚡ Extreme light detected. Applying CLAHE Contrast Boost...")
         clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
         gray = clahe.apply(gray)
-        
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     
-    # 💎 Feature Scraper (Multi-Scale Strategy for Close-ups)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    # --- 2. DETECTION PHASE: SEARCHING FOR STICKERS ---
     candidates = []
-    all_raw = []
-    rej_area, rej_shape = 0, 0
+    all_raw = [] # For Diagnostic Map
     
     def process_contours(clist, tag=""):
         found = []
-        ra, rs = 0, 0
         for c in clist:
             area = cv2.contourArea(c)
             x, y, w, h = cv2.boundingRect(c)
@@ -144,18 +151,16 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
             solidity = area / h_area if h_area > 0 else 0
             extent = area / (w * h) if (w * h) > 0 else 0
             
+            # BIO-GUARD
             roi_mini = work_img[max(0,y):min(work_h,y+h), max(0,x):min(work_w,x+w)]
+            is_skin, is_vibrant = False, True
             if roi_mini.size > 0:
                 bgr_m = np.mean(roi_mini, axis=(0,1))
                 hsv_m = cv2.cvtColor(np.uint8([[bgr_m]]), cv2.COLOR_BGR2HSV)[0][0]
-                # 🛑 BIO-GUARD: Skin is usually mid-low saturation and follows R > G > B
                 is_skin = (bgr_m[2] > bgr_m[1] > bgr_m[0]) and (hsv_m[1] < 110)
-                is_vibrant = hsv_m[1] > 110 or hsv_m[2] > 200 # White/Yellow are vibrant
-            else:
-                is_skin, is_vibrant = False, True
+                is_vibrant = hsv_m[1] > 110 or hsv_m[2] > 200
 
             if (work_h*0.005)**2 < area < (work_h*0.8)**2:
-                # 🛡️ HAND-KILLER: Must be square, solid, and NOT skin-tone
                 if ratio > 0.45 and solidity > 0.75 and extent > 0.5:
                     if (not is_skin and is_vibrant) or ratio > 0.85:
                         M = cv2.moments(c)
@@ -163,65 +168,43 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
                             cx, cy = int(M["m10"]/M["m00"]), int(M["m01"]/M["m00"])
                             dist_c = np.sqrt((cx-work_w/2)**2 + (cy-work_h/2)**2)
                             found.append({'cnt':c, 'center':(cx,cy), 'area':area, 'weight': 1.0/(1.0+dist_c/work_w)})
-                else: rs += 1
-            else: ra += 1
+            
             if tag != "SILENT":
-                all_raw.append({'box':(x,y,w,h), 'status': "YELLOW" if (len(found)>0 and found[-1]['cnt'] is c) else "RED"})
-        return found, ra, rs
+                all_raw.append({'box':(x,y,w,h), 'status': "RED", 'center':(x+w//2, y+h//2)})
+        return found
 
-    # Scan Phase (Multi-Scale)
+    # Multi-Scale RETR_LIST (Transparent Scans)
     t1 = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 13, 2)
-    candidates_raw, rej_area, rej_shape = process_contours(cv2.findContours(t1, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0])
+    c1 = process_contours(cv2.findContours(t1, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0])
     
-    if len(candidates_raw) < 7:
-        trace.append("Scan 1 low yield. Trying Scan 2 (Broad Filter)...")
-        t2 = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 81, 2)
-        c2, ra2, rs2 = process_contours(cv2.findContours(t2, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0], tag="SILENT")
-        candidates_raw.extend(c2); rej_area += ra2; rej_shape += rs2
-
-    if len(candidates_raw) < 7:
-        trace.append("Scan 1/2 failed. Retrying Scan 3 (Global Otsu)...")
-        _, t3 = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        c3, ra3, rs3 = process_contours(cv2.findContours(t3, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0], tag="SILENT")
-        candidates_raw.extend(c3)
-
-    # 🧼 NMS / DEDUPLICATION: Prevent points from stacking on same sticker
-    candidates = []
-    if candidates_raw:
-        # Sort by area (larger often better/outer contour)
-        candidates_raw.sort(key=lambda x: x['area'], reverse=True)
-        for cand in candidates_raw:
+    t2 = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 81, 2)
+    c2 = process_contours(cv2.findContours(t2, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0], tag="SILENT")
+    
+    # Deduplicate All Raw Candidates
+    c_raw = c1 + c2
+    if c_raw:
+        c_raw.sort(key=lambda x: x['area'], reverse=True)
+        for cand in c_raw:
             if not any(np.sqrt((cand['center'][0]-c['center'][0])**2 + (cand['center'][1]-c['center'][1])**2) < 15 for c in candidates):
                 candidates.append(cand)
-    
-    if sharp < 25: trace.append("⚠️ WARNING: Image is very blurry. Please hold steady.")
-    trace.append(f"Trace: Final Candidates={len(candidates)} (Deduplicated from {len(candidates_raw)})")
-    
-    # --- CLUSTERING PHASE ---
-    best_cnt = None
-    best_cluster = []
-    pass_info = "Searching..."
-    max_score = 0.0
-    best_reg_score = 0.0
-    cluster_coverage = 0.0 # 🔥 Fixed initialization
 
+    trace.append(f"Trace: Candidates Found={len(candidates)}")
+    if sharp < 25: trace.append("⚠️ WARNING: Image blurry. Hold steady.")
+
+    # --- 3. CLUSTERING PHASE: BFS CONNECTIVITY ---
     if len(candidates) >= 4:
-        # Cluster logic: Growth / Connected Components
-        pts = np.array([c['center'] for c in candidates])
-        
-        # 📏 ROBUST SCALE: Use median to ignore tiny noise/glare
         valid_areas = [c['area'] for c in candidates]
-        med_w = np.sqrt(np.median(valid_areas)) if valid_areas else 1.0
+        med_w = np.sqrt(np.median(valid_areas))
+        threshold_dist = med_w * 6.0
+        min_dist = med_w * 0.5
         
-        threshold_dist = med_w * 6.5
-        min_dist = med_w * 0.55
-        
+        pts = np.array([c['center'] for c in candidates])
         visited = [False] * len(candidates)
         all_clusters = []
         
         for i in range(len(candidates)):
             if visited[i]: continue
-            curr_cluster = [i]
+            curr_c_indices = [i]
             queue = [i]
             visited[i] = True
             while queue:
@@ -231,147 +214,132 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
                         d = np.sqrt(np.sum((pts[u] - pts[v])**2))
                         if min_dist < d < threshold_dist:
                             visited[v] = True
-                            curr_cluster.append(v)
+                            curr_c_indices.append(v)
                             queue.append(v)
-            all_clusters.append([candidates[idx] for idx in curr_cluster])
+            all_clusters.append([candidates[idx] for idx in curr_c_indices])
         
         for cluster in all_clusters:
             if len(cluster) < 4: continue
             
-            # 📐 Calculate Cluster Coverage (Physical size in image)
             c_pts = np.array([c['center'] for c in cluster])
             c_min_x, c_min_y = np.min(c_pts, axis=0)
             c_max_x, c_max_y = np.max(c_pts, axis=0)
-            c_w, c_h = c_max_x - c_min_x, c_max_y - c_min_y
-            curr_coverage = (c_w * c_h) / (work_w * work_h)
+            curr_cov = ((c_max_x-c_min_x) * (c_max_y-c_min_y)) / (work_w * work_h)
+            if curr_cov < 0.01: continue
             
-            # 🛡️ SANITY CHECK: If the whole cluster is tiny (<1% of screen), its noise.
-            if curr_coverage < 0.01: continue
-
-            # Grid Consistency (Regularity)
-            reg_score = 1.0
-            all_dists = []
+            # Regularity Scoring
+            all_d = []
             for p_m in cluster:
-                px, py = p_m['center']
-                d_to_others = sorted([np.sqrt((px-o['center'][0])**2 + (py-o['center'][1])**2) for o in cluster if o is not p_m])
-                if d_to_others: all_dists.extend(d_to_others[:2])
+                d_to_o = sorted([np.sqrt((p_m['center'][0]-o['center'][0])**2 + (p_m['center'][1]-o['center'][1])**2) for o in cluster if o is not p_m])
+                if d_to_o: all_d.extend(d_to_o[:2])
+            reg_score = 1.0 / (1.0 + np.std(all_d) / (np.mean(all_d) + 1e-6)) if all_d else 0.5
             
-            if all_dists:
-                reg_score = 1.0 / (1.0 + np.std(all_dists) / (np.mean(all_dists) + 1e-6))
-
-            # SCORING: Favor Large Clusters (Coverage) + Size (Count) + Regularity
-            score = (len(cluster)**2) * reg_score * (1.0 + curr_coverage * 10)
-            
+            score = (len(cluster)**2) * reg_score * (1.0 + curr_cov * 10)
             if 7 <= len(cluster) <= 10: score *= 5.0
             if len(cluster) == 9: score += 50
             
             if score > max_score:
                 max_score, best_cluster = score, cluster
-                best_reg_score = reg_score
-                cluster_coverage = curr_coverage # Store winning coverage
-        
-        status_msg = f"Locked cluster: {len(best_cluster)} stks (Coverage={cluster_coverage*100:.1f}%, Score={max_score:.1f})"
-        trace.append(status_msg)
-        
-        if len(best_cluster) >= 4:
-            cluster_pts = np.array([c['center'] for c in best_cluster])
-            hull = cv2.convexHull(cluster_pts)
-            approx = cv2.approxPolyDP(hull, 0.04 * cv2.arcLength(hull, True), True)
-            
-            # Map winners to GREEN in Candidate Map
-            cluster_centers = [tuple(c['center']) for c in best_cluster]
-            for r in all_raw:
-                rx, ry, rw, rh = r['box']
-                cx, cy = rx + rw//2, ry + rh//2
-                if any(np.sqrt((cx-ccx)**2 + (cy-ccy)**2) < 5 for ccx, ccy in cluster_centers):
-                    r['status'] = "GREEN"
+                best_reg_score, cluster_coverage = reg_score, curr_cov
 
-            if len(approx) == 4:
-                best_cnt = approx.reshape(4, 2)
-                pass_info = f"Grid Locked ({len(best_cluster)} stks)"
-            else:
-                (cx, cy), (w, h), angle = cv2.minAreaRect(cluster_pts)
-                best_cnt = np.int32(cv2.boxPoints(((cx, cy), (w, h), angle)))
-                pass_info = f"Grid Fallback ({len(best_cluster)} stks)"
+        trace.append(f"Locked Cluster: {len(best_cluster)} stks (Cov={cluster_coverage*100:.1f}%, Score={max_score:.1f})")
 
-    # Create Candidate Map
-    cand_img = work_img.copy()
-    for r in all_raw:
-        x, y, w, h = r['box']
-        color = (0,0,255) if r['status']=="RED" else ((0,255,255) if r['status']=="YELLOW" else (0,255,0))
-        thick = 2 if r['status']=="GREEN" else 1
-        cv2.rectangle(cand_img, (x, y), (x+w, y+h), color, thick)
-    if show_diag: diag_imgs['Candidates Map'] = cv2.cvtColor(cand_img, cv2.COLOR_BGR2RGB)
+    # Final Diagnostic Color Marking
+    if show_diag:
+        for r in all_raw:
+            color = (0,0,255) # Red for raw
+            if any(np.sqrt((r['center'][0]-c['center'][0])**2 + (r['center'][1]-c['center'][1])**2) < 5 for c in best_cluster):
+                color = (0,255,0) # Green for prize
+            cv2.rectangle(work_img, (r['box'][0], r['box'][1]), (r['box'][0]+r['box'][2], r['box'][1]+r['box'][3]), color, 1)
+        diag_imgs['Candidates Map'] = cv2.cvtColor(work_img, cv2.COLOR_BGR2RGB)
 
-    if best_cnt is None: 
-        trace.append("Detection Failed: No valid cluster found.")
-        return None, None, pass_info, diag_imgs, None, None, trace
+    # --- 4. TRANSFORMATION & OUTPUT ---
+    if len(best_cluster) < 4:
+        return None, None, "Searching...", diag_imgs, None, None, trace
 
-    # --- Refinement & Metrics ---
-    scale = h_p / work_h
-    rect_p = (best_cnt.astype("float32") * scale)
-    # Sort corners
-    rect = np.zeros((4, 2), dtype="float32")
-    s = rect_p.sum(axis=1); rect[0], rect[2] = rect_p[np.argmin(s)], rect_p[np.argmax(s)]
-    diff = np.diff(rect_p, axis=1); rect[1], rect[3] = rect_p[np.argmin(diff)], rect_p[np.argmax(diff)]
+    # Coordinate Extrapolation
+    cluster_pts = np.array([c['center'] for c in best_cluster], dtype="float32")
+    rect_min = cv2.minAreaRect(cluster_pts)
+    box_raw = cv2.boxPoints(rect_min)
+    center_box = np.mean(box_raw, axis=0)
     
-    dst = np.array([[0,0], [299,0], [299,299], [0,299]], dtype="float32")
-    M = cv2.getPerspectiveTransform(rect, dst)
-    warped = cv2.warpPerspective(img_padded, M, (300, 300))
+    expanded = []
+    for p in box_raw:
+        vec = p - center_box
+        vlen = np.linalg.norm(vec)
+        # Push outward by 0.7 * sticker width to reach face edges
+        p_new = p + (vec / vlen) * (med_w * 0.7) if vlen > 0 else p
+        expanded.append(p_new)
+    
+    # Scale back to original resolution
+    scale = h_p / work_h
+    src_pts = np.array(expanded, dtype="float32") * scale
+    
+    # Sort source rectangle
+    s = src_pts.sum(axis=1)
+    diff = np.diff(src_pts, axis=1)
+    ordered_src = np.zeros((4, 2), dtype="float32")
+    ordered_src[0] = src_pts[np.argmin(s)]     # TL
+    ordered_src[2] = src_pts[np.argmax(s)]     # BR
+    ordered_src[1] = src_pts[np.argmin(diff)]  # TR
+    ordered_src[3] = src_pts[np.argmax(diff)]  # BL
+    
+    dst_pts = np.array([[0,0], [299,0], [299,299], [0,299]], dtype="float32")
+    M_warp = cv2.getPerspectiveTransform(ordered_src, dst_pts)
+    warped = cv2.warpPerspective(img_padded, M_warp, (300, 300))
     debug_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB)
     
+    # Color Analysis & Refinement
     std_colors = get_calibrated_colors()
     detected = ['White'] * 9
-    refined_pts = []
+    metrics = []
+    refined_centers = []
+    
     hsv_w = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)
     sat_w = hsv_w[:,:,1]
-    metrics = []
     
     for r in range(3):
         for c in range(3):
             tx, ty = int((c+0.5)*100), int((r+0.5)*100)
-            win = 35
-            y1, y2, x1, x2 = max(0,ty-win), min(300,ty+win), max(0,tx-win), min(300,tx+win)
-            moms = cv2.moments(sat_w[y1:y2, x1:x2])
-            sdx, sdy = 0, 0
+            # Refine local center with Saturation Centroid
+            y1, y2, x1, x2 = max(0,ty-35), min(300,ty+35), max(0,tx-35), min(300,tx+35)
+            roi_sat = sat_w[y1:y2, x1:x2]
+            moms = cv2.moments(roi_sat)
+            final_x, final_y, off = tx, ty, (0,0)
             if moms["m00"] > 50:
                 sx, sy = x1 + int(moms["m10"]/moms["m00"]), y1 + int(moms["m01"]/moms["m00"])
                 if np.sqrt((sx-tx)**2 + (sy-ty)**2) < 30:
-                    final_x, final_y = sx, sy
-                    sdx, sdy = sx-tx, sy-ty
-                else: final_x, final_y = tx, ty
-            else: final_x, final_y = tx, ty
+                    final_x, final_y, off = sx, sy, (sx-tx, sy-ty)
             
-            refined_pts.append((final_x, final_y))
-            roi = warped[final_y-6:final_y+6, final_x-6:final_x+6]
-            bgr = np.median(roi, axis=(0,1)).astype(np.uint8) if roi.size > 0 else [0,0,0]
+            refined_centers.append((final_x, final_y))
+            # Pick color in CIE-LAB
+            roi_lab = warped[max(0,final_y-6):min(300,final_y+6), max(0,final_x-6):min(300,final_x+6)]
+            bgr = np.median(roi_lab, axis=(0,1)).astype(np.uint8) if roi_lab.size > 0 else [0,0,0]
             lab = cv2.cvtColor(np.uint8([[[bgr[0],bgr[1],bgr[2]]]]), cv2.COLOR_BGR2LAB)[0][0]
             
-            dists = {}
-            min_d, best_c = 999.0, 'White'
+            min_d, best_c, dists = 999.0, 'White', {}
             for name, (hs,ss,vs) in std_colors.items():
-                sl = cv2.cvtColor(cv2.cvtColor(np.uint8([[[hs,ss,vs]]]), cv2.COLOR_HSV2BGR), cv2.COLOR_BGR2LAB)[0][0]
-                dV = np.round(np.sqrt(0.1*(float(lab[0])-sl[0])**2 + 2.0*(float(lab[1])-sl[1])**2 + 2.0*(float(lab[2])-sl[2])**2), 1)
-                dists[name] = dV
+                target_lab = cv2.cvtColor(cv2.cvtColor(np.uint8([[[hs,ss,vs]]]), cv2.COLOR_HSV2BGR), cv2.COLOR_BGR2LAB)[0][0]
+                dV = np.sqrt(0.1*(float(lab[0])-target_lab[0])**2 + 2.4*(float(lab[1])-target_lab[1])**2 + 2.4*(float(lab[2])-target_lab[2])**2)
+                dists[name] = np.round(dV, 1)
                 if dV < min_d: min_d, best_c = dV, name
             
             detected[r*3+c] = best_c
-            metrics.append({'slot': r*3+c, 'final_color': best_c, 'distances': dists, 'snap_offset': (sdx, sdy), 'confidence': np.round(100 - min_d, 1)})
-            cv2.circle(debug_warped, (final_x, final_y), 6, (255,255,255), 1)
+            metrics.append({'slot':r*3+c, 'final_color':best_c, 'distances':dists, 'snap_offset':off, 'confidence':np.round(100 - min_d, 1)})
+            cv2.circle(debug_warped, (final_x, final_y), 5, (255,255,255), 1)
             cv2.putText(debug_warped, best_c[0], (final_x-5, final_y+5), 0, 0.4, (255,255,255), 1)
 
-    # AR High-Res
-    M_inv = cv2.getPerspectiveTransform(dst, (best_cnt.astype("float32") * scale))
-    ar_img = img_padded.copy()
-    trace.append("AR projection calibrated and applied.")
-    for i, (fx, fy) in enumerate(refined_pts):
+    # Final AR Step
+    M_inv = cv2.getPerspectiveTransform(dst_pts, ordered_src)
+    ar_overlay = img_padded.copy()
+    for i, (fx, fy) in enumerate(refined_centers):
         p_orig = cv2.perspectiveTransform(np.array([[[fx, fy]]], dtype="float32"), M_inv)
         px, py = int(p_orig[0][0][0]), int(p_orig[0][0][1])
-        cv2.circle(ar_img, (px, py), int(h_p/150), (255,255,255), -1)
-        cv2.putText(ar_img, detected[i][0], (px+10, py+10), 0, h_p/1200, (255,255,255), 2)
-
-    detected[4] = expected_center
-    return detected, debug_warped, pass_info, diag_imgs, cv2.cvtColor(ar_img[pad:-pad, pad:-pad], cv2.COLOR_BGR2RGB), metrics, trace
+        cv2.circle(ar_overlay, (px, py), int(h_p/140), (255,255,255), -1)
+        cv2.putText(ar_overlay, detected[i][0], (px+10, py+10), 0, h_p/1200, (255,255,255), 2)
+    
+    detected[4] = expected_center # Protect center
+    return detected, debug_warped, f"Locked {len(best_cluster)} stks", diag_imgs, cv2.cvtColor(ar_overlay[pad:-pad, pad:-pad], cv2.COLOR_BGR2RGB), metrics, trace
 
 def run_manual_grid_extract(image_bytes, expected_center, scale_percent):
     file_bytes = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
