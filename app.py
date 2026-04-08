@@ -570,7 +570,7 @@ if app_mode == "📸 Scan & Solve":
             caption = ("✅ Auto-detected cube region! Fix any errors on the right ➡️"
                        if method_tag == "auto"
                        else "Manual grid used. Fix errors on the right ➡️")
-            st.image(st.session_state[f"debug_{current_face}"], caption=caption)
+            st.image(st.session_state[f"debug_{current_face}"], caption=caption,width=400)
 
     with col_manual:
         st.write("### 🖱️ Edit / Verify Colors")
@@ -742,7 +742,8 @@ elif app_mode == "⚙️ Tune Colors":
         
         value = streamlit_image_coordinates(
             img_rgb,
-            key=f"calib_click_{calib_color}_{cv}"
+            key=f"calib_click_{calib_color}_{cv}",
+            width=450
         )
         
         if value is None:
