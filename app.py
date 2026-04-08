@@ -100,135 +100,121 @@ st.markdown("""
 def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
     file_bytes = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, 1)
-    if img is None: return None, None, "No Image Data", {}
+    if img is None: return None, None, "No Image Data", {}, None
     
     diag_imgs = {}
-    
-    # 1. Padding: Add black border so edge-touching stickers are detected correctly
     pad = 40
     img_padded = cv2.copyMakeBorder(img, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=[0, 0, 0])
     h_p, w_p = img_padded.shape[:2]
     
-    # Work image for processing
     work_h = 650
     work_w = int(w_p * (work_h / h_p))
     work_img = cv2.resize(img_padded, (work_w, work_h))
-    
-    # Tracking Image: Resized original for UI feedback
     tracking_img = work_img.copy()
 
-    # Pre-processing
     gray = cv2.cvtColor(work_img, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     
     best_cnt = None
     pass_info = "Waiting..."
     
-    # Pass 1: Adaptive Threshold (Finding stickers)
+    # Pass 1: Sticker Clustering
     thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
     if show_diag: diag_imgs['Pass 1 (Stickers)'] = thresh
     cnts_s, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     stks = []
-    # Relaxed constraints for tilting/compression
     for c in cnts_s:
         a = cv2.contourArea(c)
         if (work_h*0.02)**2 < a < (work_h*0.4)**2:
             x,y,w,h = cv2.boundingRect(c)
-            if 0.25 < w/max(1,h) < 4.0: 
-                stks.append(c)
+            if 0.25 < w/max(1,h) < 4.0: stks.append(c)
 
     total_area = work_h * work_w
     if len(stks) >= 4:
-        # Use Rotated Bounding Box (minAreaRect)
         combined = np.vstack(stks)
         (cx, cy), (w, h), angle = cv2.minAreaRect(combined)
-        
-        # Area Qualification Check
         box_area = w * h
         area_pct = (box_area / total_area) * 100
         pass_info = f"Pass 1: Found {len(stks)} stickers. Area={area_pct:.1f}%"
-        
         if (total_area * 0.10 < box_area < total_area * 0.60):
-            # Pass 1 Success
             theta = angle * np.pi / 180.0
             cos_t, sin_t = np.cos(theta), np.sin(theta)
-            rect_pts = np.array([[-w/2, -h/2], [w/2, -h/2], [w/2, h/2], [-w/2, h/2]])
-            best_cnt = np.array([
-                [cx + p[0]*cos_t - p[1]*sin_t, cy + p[0]*sin_t + p[1]*cos_t] 
-                for p in rect_pts
-            ]).astype(np.int32)
-        else:
-            # Area invalid, let it fall through to Pass 2 (Outline Detection)
-            best_cnt = None
-    
-    # Pass 2: Fallback to Canny + Dilation if Pass 1 found nothing or failed area check
+            pts_rect = np.array([[-w/2, -h/2], [w/2, -h/2], [w/2, h/2], [-w/2, h/2]])
+            best_cnt = np.array([[cx + p[0]*cos_t - p[1]*sin_t, cy + p[0]*sin_t + p[1]*cos_t] for p in pts_rect]).astype(np.int32)
+
+    # Pass 2: Outline Extraction
     if best_cnt is None:
-        edges = cv2.Canny(blurred, 20, 100)
-        edges = cv2.dilate(edges, np.ones((3,3)))
+        edges = cv2.dilate(cv2.Canny(blurred, 20, 100), np.ones((3,3)))
         if show_diag: diag_imgs['Pass 2 (Edges)'] = edges
         cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        max_area = 0
+        max_a = 0
         for cnt in cnts:
-            # 🌟 Absolute Border Defense: Check bounding box proximity to frame edges
             x, y, wc, hc = cv2.boundingRect(cnt)
-            if x < 15 or y < 15 or (x + wc) > (work_w - 15) or (y + hc) > (work_h - 15):
-                continue
-                
+            if x < 15 or y < 15 or (x+wc) > (work_w-15) or (y+hc) > (work_h-15): continue
             area = cv2.contourArea(cnt)
-            area_pct = (area / total_area) * 100
-            # Area Constraint: 5% ~ 45% (more realistic for scan view)
             if (total_area * 0.05) < area < (total_area * 0.45):
                 hull = cv2.convexHull(cnt)
-                peri = cv2.arcLength(hull, True)
-                appr = cv2.approxPolyDP(hull, 0.05 * peri, True)
-                
-                # Check for 4 vertices and aspect ratio
+                appr = cv2.approxPolyDP(hull, 0.05 * cv2.arcLength(hull, True), True)
                 if len(appr) == 4:
                     _, (bw, bh), _ = cv2.minAreaRect(appr)
                     ratio = min(bw, bh) / max(bw, bh) if max(bw, bh) > 0 else 0
+                    area_pct = (area / total_area) * 100
                     pass_info = f"Pass 2: Area={area_pct:.1f}%, Ratio={ratio:.2f}"
-                    
-                    if area > max_area and ratio > 0.5:  
-                        max_area = area
-                        best_cnt = appr.reshape(4, 2)
+                    if area > max_a and ratio > 0.5:
+                        max_a, best_cnt = area, appr.reshape(4, 2)
 
-    if best_cnt is None: 
-        if "Pass 2" not in pass_info: pass_info = "Fail: No valid cube-like contours found in Pass 1 or 2."
+    if best_cnt is None:
+        if "Pass 2" not in pass_info: pass_info = "Fail: No valid cube found."
         return None, None, pass_info, diag_imgs, None
-        
-    # Draw green tracking outline on the original work image
-    cv2.drawContours(tracking_img, [best_cnt], -1, (0, 255, 0), 3)
+
+    # Perspective Prep
+    pts_padded = (best_cnt.reshape(4, 2) * (h_p / work_h)).astype("float32")
+    rect = np.zeros((4, 2), dtype="float32")
+    s = pts_padded.sum(axis=1)
+    rect[0], rect[2] = pts_padded[np.argmin(s)], pts_padded[np.argmax(s)]
+    diff = np.diff(pts_padded, axis=1)
+    rect[1], rect[3] = pts_padded[np.argmin(diff)], pts_padded[np.argmax(diff)]
+    dst = np.array([[0,0], [299,0], [299,299], [0,299]], dtype="float32")
     
-    # --- Augmented Reality Overlay on Tracking Image ---
-    # Define color BGR map for drawing on tracking_img
-    draw_map = {
-        'White': (255, 255, 255), 'Yellow': (0, 255, 255), 'Orange': (0, 165, 255),
-        'Red': (0, 0, 255), 'Green': (0, 255, 0), 'Blue': (255, 0, 0)
-    }
+    # Warp & Detect Colors
+    M = cv2.getPerspectiveTransform(rect, dst)
+    warped = cv2.warpPerspective(img_padded, M, (300, 300))
+    debug_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB)
     
-    # Calculate Inverse Perspective Transform back to the work_img space
-    M_inv = cv2.getPerspectiveTransform(dst, rect)
-    
+    std_colors = get_calibrated_colors()
+    detected = ['White'] * 9
     for r in range(3):
         for c in range(3):
-            m = 5
-            x1, y1 = c*100 + m, r*100 + m
-            x2, y2 = (c+1)*100 - m, (r+1)*100 - m
-            pts_warped = np.array([[[x1, y1], [x2, y1], [x2, y2], [x1, y2]]], dtype="float32")
-            pts_orig = cv2.perspectiveTransform(pts_warped, M_inv)
-            pts_orig = np.int32(pts_orig)
-            
-            c_name = detected[r*3+c]
-            bgr = draw_map.get(c_name, (0, 255, 0))
-            cv2.polylines(tracking_img, [pts_orig], True, bgr, 3)
+            cx, cy = int((c+0.5)*100), int((r+0.5)*100)
+            roi = warped[cy-12:cy+12, cx-12:cx+12]
+            if roi.size == 0: continue
+            bgr_avg = np.median(roi, axis=(0,1)).astype(np.uint8)
+            lab = cv2.cvtColor(np.uint8([[[bgr_avg[0], bgr_avg[1], bgr_avg[2]]]]), cv2.COLOR_BGR2LAB)[0][0]
+            min_d, best_c = float('inf'), 'White'
+            for name, (hs, ss, vs) in std_colors.items():
+                sl = cv2.cvtColor(cv2.cvtColor(np.uint8([[[hs,ss,vs]]]), cv2.COLOR_HSV2BGR), cv2.COLOR_BGR2LAB)[0][0]
+                d = np.sqrt(0.3*(float(lab[0])-float(sl[0]))**2 + 1.5*(float(lab[1])-float(sl[1]))**2 + 1.5*(float(lab[2])-float(sl[2]))**2)
+                if d < min_d: min_d, best_c = d, name
+            detected[r*3+c] = best_c
+            short = f"{COLOR_EMOJIS[best_c][0]}{best_c[0]}"
+            cv2.circle(debug_warped, (cx, cy), 15, (255,255,255), 2)
+            cv2.putText(debug_warped, short, (cx-20, cy+40), 0, 0.45, (0,0,0), 2, cv2.LINE_AA)
+            cv2.putText(debug_warped, short, (cx-20, cy+40), 0, 0.45, (255,255,255), 1, cv2.LINE_AA)
 
-    # Convert to RGB for UI ONLY after all BGR drawing is complete
-    tracking_img = cv2.cvtColor(tracking_img, cv2.COLOR_BGR2RGB)
+    # AR Overlay
+    cv2.drawContours(tracking_img, [best_cnt], -1, (0, 255, 0), 3)
+    draw_map = {'White':(255,255,255), 'Yellow':(0,255,255), 'Orange':(0,165,255), 'Red':(0,0,255), 'Green':(0,255,0), 'Blue':(255,0,0)}
+    M_inv = cv2.getPerspectiveTransform(dst, rect)
+    for r in range(3):
+        for c in range(3):
+            m = 10
+            pts_w = np.array([[[c*100+m, r*100+m], [(c+1)*100-m, r*100+m], [(c+1)*100-m, (r+1)*100-m], [c*100+m, (r+1)*100-m]]], dtype="float32")
+            pts_orig = np.int32(cv2.perspectiveTransform(pts_w, M_inv))
+            cv2.polylines(tracking_img, [pts_orig], True, draw_map.get(detected[r*3+c], (0,255,0)), 3)
 
     detected[4] = expected_center
-    return detected, debug_warped, pass_info, diag_imgs, tracking_img
+    return detected, debug_warped, pass_info, diag_imgs, cv2.cvtColor(tracking_img, cv2.COLOR_BGR2RGB)
 
 def run_manual_grid_extract(image_bytes, expected_center, scale_percent):
     file_bytes = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
