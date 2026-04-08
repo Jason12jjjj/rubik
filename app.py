@@ -491,19 +491,19 @@ if app_mode == "📸 Scan & Solve":
             cache_key = (f"{current_face}_shared" if is_shared
                          else f"{current_face}_{getattr(active_buffer, 'file_id', id(active_buffer))}")
 
-            if st.session_state.processed_photos.get(current_face) != cache_key:
+           if st.session_state.processed_photos.get(current_face) != cache_key:
                 if hasattr(active_buffer, 'seek'):
                     active_buffer.seek(0)
                 detected, debug_img, method = extract_colors_from_image(active_buffer, CENTER_COLORS[current_face])
                 
-               if detected is None:
-               st.error(f"❌ **Auto-Detect Failed:** {debug_img}") 
-               st.info("💡 **Quick Fix:** Click the `>` icon top-left to open the Sidebar, and turn **OFF** `Auto-Detect Cube`. This gives you a manual grid that ignores all background mess!")
+                if detected is None:
+                    st.error(f"❌ **Auto-Detect Failed:** {debug_img}")
+                    st.info("💡 **Quick Fix:** Click the `>` icon top-left to open the Sidebar, and turn **OFF** `Auto-Detect Cube`. This gives you a manual grid that ignores all background mess!")
                     
                     if current_face in st.session_state.processed_photos:
                         del st.session_state.processed_photos[current_face]
                     st.stop()
-                    s
+
                 if detected[4] != CENTER_COLORS[current_face]:
                     st.error(f"❌ **Wrong Face Scanned!** Your camera detected a **{detected[4]}** center, but this is the **{current_face} ({CENTER_COLORS[current_face]})** slot.")
                     if current_face in st.session_state.processed_photos:
