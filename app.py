@@ -132,29 +132,30 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
 
     total_area = work_h * work_w
     if len(stks) >= 4:
-        # Pass 1 Upgrade: Use Convex Hull + Poly Approximation for a much tighter perspective-aware fit
+        # Pass 1 Upgrade: More flexible fit (0.02 epsilon)
         combined = np.vstack(stks)
         hull = cv2.convexHull(combined)
         peri = cv2.arcLength(hull, True)
-        appp = cv2.approxPolyDP(hull, 0.04 * peri, True)
+        appp = cv2.approxPolyDP(hull, 0.02 * peri, True)
         
         if len(appp) == 4:
             area = cv2.contourArea(appp)
             area_pct = (area / total_area) * 100
-            pass_info = f"Pass 1: Found {len(stks)} stickers. Area={area_pct:.1f}%"
-            
-            if (total_area * 0.05 < area < total_area * 0.70):
+            pass_info = f"Pass 1: {len(stks)} stickers. Area={area_pct:.1f}%"
+            if (total_area * 0.02 < area < total_area * 0.80):
                 best_cnt = appp.reshape(4, 2)
         else:
-            # If hull approximation is complex, use minAreaRect as a robust fallback
+            # Fallback to robust bounding rect if poly fitting fails
             (cx, cy), (w, h), angle = cv2.minAreaRect(combined)
             area = w * h
-            if (total_area * 0.05 < area < total_area * 0.70):
+            if (total_area * 0.02 < area < total_area * 0.80):
                 theta = angle * np.pi / 180.0
                 cos_t, sin_t = np.cos(theta), np.sin(theta)
                 pts_rect = np.array([[-w/2, -h/2], [w/2, -h/2], [w/2, h/2], [-w/2, h/2]])
                 best_cnt = np.array([[cx + p[0]*cos_t - p[1]*sin_t, cy + p[0]*sin_t + p[1]*cos_t] for p in pts_rect]).astype(np.int32)
-                pass_info = f"Pass 1: Rect Fallback. Area={ (area/total_area)*100:.1f}%"
+                pass_info = f"Pass 1: Rect Fallback ({len(stks)} stks). Area={(area/total_area)*100:.1f}%"
+    else:
+        pass_info = f"Pass 1: Only found {len(stks)} stickers (Need 4+)."
 
     # Pass 2: Outline Extraction
     if best_cnt is None:
