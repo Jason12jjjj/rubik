@@ -205,8 +205,8 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
         # Cluster logic: Growth / Connected Components
         pts = np.array([c['center'] for c in candidates])
         avg_w = np.mean([np.sqrt(c['area']) for c in candidates])
-        threshold_dist = avg_w * 4.5 # Increased for perspective
-        min_dist = avg_w * 0.6
+        threshold_dist = avg_w * 6.0 # 🔥 Increased to 6.0 for massive close-ups
+        min_dist = avg_w * 0.5
         
         visited = [False] * len(candidates)
         all_clusters = []
@@ -232,21 +232,23 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
         max_score = 0
         best_reg_score = 0.0
         for cluster in all_clusters:
+            # We must be aggressive: even 4 points is better than nothing
             if len(cluster) < 4: continue
             
-            # 📐 Regularity score for this specific cluster
+            # 📐 Regularity score (Grid consistency)
             reg_score = 1.0
             if len(cluster) >= 4:
                 all_dists = []
                 for p_m in cluster:
                     px, py = p_m['center']
+                    # Check 2 nearest neighbors in cluster
                     d_to_others = sorted([np.sqrt((px-o['center'][0])**2 + (py-o['center'][1])**2) for o in cluster if o is not p_m])
-                    all_dists.extend(d_to_others[:2]) # Check 2 nearest
+                    all_dists.extend(d_to_others[:2])
                 reg_score = 1.0 / (1.0 + np.std(all_dists) / (np.mean(all_dists) + 1e-6))
 
-            score = len(cluster) * np.mean([c['weight'] for c in cluster]) * reg_score
-            if 7 <= len(cluster) <= 10: score *= 4.0
-            if len(cluster) == 9: score += 20
+            # HEAVY BIAS towards size over center-weight for close-ups
+            score = (len(cluster)**2) * reg_score 
+            if 7 <= len(cluster) <= 10: score *= 5.0
             
             if score > max_score:
                 max_score, best_cluster = score, cluster
