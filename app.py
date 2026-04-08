@@ -428,6 +428,21 @@ with st.sidebar:
         st.markdown("## 🗺️ Live Cube Map")
         st.caption("Dims = not yet scanned. Glowing = current face.")
         st.markdown(render_live_map(active_face=active), unsafe_allow_html=True)
+        
+        st.divider()
+        st.markdown("## 🧪 Developer Demo Tools")
+        if st.button("🚀 Load Demo Images (1.jpeg)", use_container_width=True):
+            # Load images directly from disk into shared_face_images
+            for face, color_name in CENTER_COLORS.items():
+                fname = f"{color_name.lower()}1.jpeg"
+                if os.path.exists(fname):
+                    with open(fname, "rb") as f:
+                        st.session_state.shared_face_images[face] = f.read()
+                        # Also override processed to force refresh
+                        st.session_state.processed_photos.pop(face, None)
+            st.session_state.uploader_key_version += 1
+            st.rerun()
+
     else:
         st.markdown("## 🗺️ Cube State")
         scanned = len(st.session_state.processed_photos)
@@ -466,6 +481,10 @@ if app_mode == "📸 Scan & Solve":
     if st.session_state.get('scan_success_msg'):
         st.success(st.session_state.scan_success_msg)
         st.session_state.scan_success_msg = None
+        
+    if st.session_state.get('scan_warning_msg'):
+        st.warning(st.session_state.scan_warning_msg)
+        st.session_state.scan_warning_msg = None
 
     def render_orientation_guide(face):
         center_col = CENTER_COLORS[face]
@@ -481,11 +500,19 @@ if app_mode == "📸 Scan & Solve":
         </div>
         """
 
+    # Read external programmatic updates if any
+    active_idx = FACES.index(st.session_state.get('programmatic_face', FACES[0]))
+    
     current_face = st.radio(
         "🧭 **Select which face you are scanning:**", FACES,
+        index=active_idx,
         format_func=lambda x: f"{COLOR_EMOJIS[CENTER_COLORS[x]]} {x} Face",
-        horizontal=True, key="face_selector"
+        horizontal=True
     )
+    
+    # We must reset the programmatic push so manual clicks work next time
+    if st.session_state.get('programmatic_face') != current_face:
+        st.session_state.programmatic_face = current_face
 
     # FIX #2: Increment keys instead of invoking Javascript 
     if st.session_state.get('last_scanned_face') != current_face:
@@ -536,14 +563,11 @@ if app_mode == "📸 Scan & Solve":
                         del st.session_state.processed_photos[current_face]
                     st.stop()
 
-                # Center Face Validation (Anti-Mistake Shield)
+                # Center Face Validation (Anti-Mistake Shield / Graceful Degradation)
+                is_warning = False
                 if detected[4] != CENTER_COLORS[current_face]:
-                    st.error(f"❌ **Wrong Face Scanned!** Your camera detected a **{detected[4]}** center, but this is the **{current_face} ({CENTER_COLORS[current_face]})** slot.")
-                    st.warning("Please ensure you are holding the correct side of the Rubik's cube facing the camera.")
-                    # Delete the bad photo record so the UI doesn't pretend it succeeded
-                    if current_face in st.session_state.processed_photos:
-                        del st.session_state.processed_photos[current_face]
-                    st.stop()
+                    is_warning = True
+                    st.session_state.scan_warning_msg = f"⚠️ **Possible Color Shift Detected:** AI read a **{detected[4]}** center instead of **{CENTER_COLORS[current_face]}**. The photo was loaded, but please double-check the grid on the right to manually fix any wrong colors!"
 
                 # Force the center to be perfect just in case the algorithm needs strict Kociemba safety
                 detected[4] = CENTER_COLORS[current_face]
@@ -554,14 +578,18 @@ if app_mode == "📸 Scan & Solve":
                 st.session_state.processed_photos[current_face] = cache_key
                 st.session_state.last_solution = None
 
-                st.session_state.scan_success_msg = f"🎉 **{current_face} Face** scanned successfully."
                 unscanned = [f for f in FACES if f not in st.session_state.processed_photos]
+                
+                if not is_warning:
+                    st.session_state.scan_success_msg = f"🎉 **{current_face} Face** scanned successfully."
+                    if unscanned:
+                        st.session_state.scan_success_msg += f" Auto-advanced to **{unscanned[0]} Face**."
+                    else:
+                        st.session_state.scan_success_msg += " All 6 faces are ready to solve!"
+
                 if unscanned:
-                    st.session_state.face_selector = unscanned[0]
+                    st.session_state.programmatic_face = unscanned[0]
                     st.session_state.uploader_key_version += 1
-                    st.session_state.scan_success_msg += f" Auto-advanced to **{unscanned[0]} Face**."
-                else:
-                    st.session_state.scan_success_msg += " All 6 faces are ready to solve!"
 
                 st.rerun()
 
