@@ -202,15 +202,25 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
             cv2.putText(debug_warped, short, (cx-20, cy+40), 0, 0.45, (0,0,0), 2, cv2.LINE_AA)
             cv2.putText(debug_warped, short, (cx-20, cy+40), 0, 0.45, (255,255,255), 1, cv2.LINE_AA)
 
-    # AR Overlay
-    cv2.drawContours(tracking_img, [best_cnt], -1, (0, 255, 0), 3)
-    draw_map = {'White':(255,255,255), 'Yellow':(0,255,255), 'Orange':(0,165,255), 'Red':(0,0,255), 'Green':(0,255,0), 'Blue':(255,0,0)}
-    M_inv = cv2.getPerspectiveTransform(dst, rect)
+    # AR Overlay: Project grid back to the WORK image (650px high)
+    draw_map = {'White': (255,255,255), 'Yellow': (0,255,255), 'Orange': (0,165,255), 'Red': (0,0,255), 'Green': (0,255,0), 'Blue': (255,0,0)}
+    
+    # Sort best_cnt for M_inv (must match dst order)
+    pts_w = best_cnt.reshape(4, 2).astype("float32")
+    s = pts_w.sum(axis=1)
+    diff = np.diff(pts_w, axis=1)
+    rect_w = np.zeros((4, 2), dtype="float32")
+    rect_w[0], rect_w[2] = pts_w[np.argmin(s)], pts_w[np.argmax(s)]
+    rect_w[1], rect_w[3] = pts_w[np.argmin(diff)], pts_w[np.argmax(diff)]
+    
+    M_inv = cv2.getPerspectiveTransform(dst, rect_w)
     for r in range(3):
         for c in range(3):
             m = 10
-            pts_w = np.array([[[c*100+m, r*100+m], [(c+1)*100-m, r*100+m], [(c+1)*100-m, (r+1)*100-m], [c*100+m, (r+1)*100-m]]], dtype="float32")
-            pts_orig = np.int32(cv2.perspectiveTransform(pts_w, M_inv))
+            # Define cell edges in 300x300 warped space
+            pts_c = np.array([[[c*100+m, r*100+m], [(c+1)*100-m, r*100+m], [(c+1)*100-m, (r+1)*100-m], [c*100+m, (r+1)*100-m]]], dtype="float32")
+            # Project back to work_img coordinate space
+            pts_orig = np.int32(cv2.perspectiveTransform(pts_c, M_inv))
             cv2.polylines(tracking_img, [pts_orig], True, draw_map.get(detected[r*3+c], (0,255,0)), 3)
 
     detected[4] = expected_center
@@ -357,6 +367,9 @@ if app_mode == "📸 Scan & Solve":
                 if hasattr(act, 'seek'): act.seek(0)
                 
                 # BRANCH: Auto-Detect vs Manual Alignment
+                msg_success = "✨ **I flattened the cube face!** Check the orientation and colors."
+                msg_fail = "❌ Cube not found. Try to hold it flatter, or switch to Manual Mode."
+                
                 if st.session_state.auto_detect:
                     d, db, info, diags, track = auto_detect_cube_face(act, CENTER_COLORS[curr], show_diag=st.session_state.get('show_diag'))
                     success = (d is not None)
@@ -367,14 +380,9 @@ if app_mode == "📸 Scan & Solve":
                         with t_col: st.image(track, caption="🎯 Target Locked", use_container_width=True)
                         with r_col: st.image(db, caption="📸 Color Result", use_container_width=True)
                         st.success(msg_success)
-                    
-                    if st.session_state.get('show_diag'):
-                        st.write(f"🔬 Diag: {info}")
-                        if diags:
-                            dcols = st.columns(len(diags))
-                            for i, (name, img) in enumerate(diags.items()):
-                                with dcols[i]: st.image(img, caption=name, use_container_width=True)
-                    msg_fail = f"❌ Cube not found. (Diag: {info})" if st.session_state.get('show_diag') else "❌ Cube outline not found. Try to hold it flatter, or switch to Manual Mode."
+                    else:
+                        msg_fail = f"❌ Cube not found. (Diag: {info})" if st.session_state.get('show_diag') else msg_fail
+                        st.error(msg_fail)
                 else:
                     d, db, success = run_manual_grid_extract(act, CENTER_COLORS[curr], st.session_state.cube_size)
                     info = "Manual"
