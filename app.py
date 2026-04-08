@@ -1,310 +1,368 @@
-import io, os, json, time, random, numpy as np, cv2, streamlit as st, streamlit.components.v1 as components
+import json
+import os
+
+import cv2
+import numpy as np
+import streamlit as st
 from streamlit_image_coordinates import streamlit_image_coordinates
-from rubiks_core import validate_cube_state, solve_cube
 
-# --- 1. SYSTEM CONFIG & CYBERPUNK STYLES ---
-st.set_page_config(page_title="CyberScanner 2077", page_icon="📡", layout="wide")
-FACES = ['Up', 'Left', 'Front', 'Right', 'Back', 'Down']
-CENTER_COLORS = {'Up':'White','Left':'Orange','Front':'Green','Right':'Red','Back':'Blue','Down':'Yellow'}
-HEX_COLORS = {'White':'#f8f9fa','Red':'#ff4b4b','Green':'#09ab3b','Yellow':'#ffeb3b','Orange':'#ffa500','Blue':'#1e88e5'}
-COLOR_EMOJIS = {'White':'⬜','Red':'🟥','Green':'🟩','Yellow':'🟨','Orange':'🟧','Blue':'🟦'}
-CALIB_FILE = "calibration_profile.json"
+from rubiks_core import solve_cube, validate_cube_state
 
+st.set_page_config(page_title="AI Rubik's Cube Solver", page_icon="🧊", layout="wide")
+
+FACES = ["Up", "Left", "Front", "Right", "Back", "Down"]
+CENTER_COLORS = {
+    "Up": "White",
+    "Left": "Orange",
+    "Front": "Green",
+    "Right": "Red",
+    "Back": "Blue",
+    "Down": "Yellow",
+}
+HEX_COLORS = {
+    "White": "#F8F9FA",
+    "Yellow": "#F7DC6F",
+    "Orange": "#F39C12",
+    "Red": "#E74C3C",
+    "Green": "#27AE60",
+    "Blue": "#3498DB",
+}
 ORIENTATION_GUIDE = {
-    'Up':("⬜ White","🟦 Blue","[TARGET]: WHITE_CORE | [REF]: BLUE_NORTH"),
-    'Left':("🟧 Orange","⬜ White","[TARGET]: ORANGE_CORE | [REF]: WHITE_NORTH"),
-    'Front':("🟩 Green","⬜ White","[TARGET]: GREEN_CORE | [REF]: WHITE_NORTH"),
-    'Right':("🟥 Red","⬜ White","[TARGET]: RED_CORE | [REF]: WHITE_NORTH"),
-    'Back':("🟦 Blue","⬜ White","[TARGET]: BLUE_CORE | [REF]: WHITE_NORTH"),
-    'Down':("🟨 Yellow","🟩 Green","[TARGET]: YELLOW_CORE | [REF]: GREEN_NORTH")
+    "Up": "Point camera to White center. Keep Blue side on TOP.",
+    "Left": "Point camera to Orange center. Keep White side on TOP.",
+    "Front": "Point camera to Green center. Keep White side on TOP.",
+    "Right": "Point camera to Red center. Keep White side on TOP.",
+    "Back": "Point camera to Blue center. Keep White side on TOP.",
+    "Down": "Point camera to Yellow center. Keep Green side on TOP.",
+}
+CALIB_FILE = "calibration_profile.json"
+FACE_LAYOUT = {
+    "Up": (0, 1),
+    "Left": (1, 0),
+    "Front": (1, 1),
+    "Right": (1, 2),
+    "Back": (1, 3),
+    "Down": (2, 1),
 }
 
-def speak(text):
-    """Executes JS for Text-to-Speech"""
-    components.html(f"<script>const m = new SpeechSynthesisUtterance('{text}'); m.rate=0.95; window.speechSynthesis.speak(m);</script>", height=0)
 
-def play_sfx(sfx_type):
-    urls = {
-        'lock': "https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3",
-        'solve': "https://assets.mixkit.co/active_storage/sfx/1435/1435-preview.mp3"
+def init_session():
+    defaults = {
+        "cube_state": {
+            f: ["White", "White", "White", "White", CENTER_COLORS[f], "White", "White", "White", "White"]
+            for f in FACES
+        },
+        "scanned_faces": set(),
+        "active_face": "Front",
+        "last_scan": None,
+        "solution": None,
+        "speed": 1.0,
     }
-    components.html(f"""<audio autoplay><source src="{urls.get(sfx_type)}" type="audio/mpeg"></audio>""", height=0)
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
-st.markdown("""
-<style>
-    /* Cyberpunk HUD - PERCENTAGE BASED FOR SYNC */
-    [data-testid="stCameraInput"] { 
-        position: relative; border: 2px solid #00e5ff; border-radius: 15px; 
-        box-shadow: 0 0 20px rgba(0,229,255,0.3); overflow: hidden;
-    }
-    
-    [data-testid="stCameraInput"]::after {
-        content: ""; position: absolute; 
-        top: 45%; left: 50%; transform: translate(-50%, -50%);
-        width: 60%; aspect-ratio: 1/1; z-index: 999; pointer-events: none;
-        box-shadow: 0 0 0 1000px rgba(0, 0, 0, 0.6);
-        border: 2px solid rgba(0, 229, 255, 0.6);
-        background: linear-gradient(to bottom, transparent 50%, rgba(0, 229, 255, 0.1) 51%, rgba(0, 229, 255, 0.4) 52%, rgba(0, 229, 255, 0.1) 53%, transparent 54%);
-        background-size: 100% 200%;
-        animation: scan-line 4s linear infinite;
-    }
-    @keyframes scan-line { 0% { background-position: 0 -100%; } 100% { background-position: 0 100%; } }
-    
-    .pro-corners {
-        position: absolute; top: 45%; left: 50%; transform: translate(-50%, -50%);
-        width: 62%; aspect-ratio: 1/1; z-index: 1001; pointer-events: none;
-    }
-    .corner { 
-        position: absolute; width: 40px; height: 40px; border: 4px solid #00e5ff; 
-        filter: drop-shadow(0 0 8px #00e5ff); 
-    }
-    .tl { top: 0; left: 0; border-right: none; border-bottom: none; }
-    .tr { top: 0; right: 0; border-left: none; border-bottom: none; }
-    .bl { bottom: 0; left: 0; border-right: none; border-top: none; }
-    .br { bottom: 0; right: 0; border-left: none; border-top: none; }
-    
-    .stButton>button {
-        background: rgba(0, 229, 255, 0.1) !important; color: #00e5ff !important;
-        border: 1px solid rgba(0, 229, 255, 0.3) !important; backdrop-filter: blur(5px);
-    }
-    .low-light-warning {
-        position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-        color: #ff4b4b; font-weight: bold; font-size: 20px; z-index: 1002;
-        text-shadow: 0 0 10px #000; animation: flash 1s infinite;
-    }
-    @keyframes flash { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
-</style>
-""", unsafe_allow_html=True)
 
-# CSS for the Interactive Nav Grid
-def render_interactive_nav():
-    layout = {'Up':(0,1), 'Left':(1,0), 'Front':(1,1), 'Right':(1,2), 'Back':(1,3), 'Down':(2,1)}
-    st.markdown("#### 🗺️ 2D PROTOCOL MAP")
-    for r in range(3):
-        cols = st.columns(4)
-        for c in range(4):
-            face = next((f for f, p in layout.items() if p == (r, c)), None)
-            if face:
-                btn_type = "primary" if face == st.session_state.programmatic_face else "secondary"
-                # Use a small visual state indicator
-                is_done = "✅" if face in st.session_state.processed_photos else "⏳"
-                if cols[c].button(f"{is_done} {face[0]}", key=f"nav_{face}", help=f"Jump to {face} face"):
-                    st.session_state.programmatic_face = face
-                    st.rerun()
-
-# --- 2. CORE ENGINES ---
-def get_calibrated_colors():
-    defaults = {'White':(0,30,220), 'Yellow':(30,160,200), 'Orange':(12,200,240), 'Red':(0,210,180), 'Green':(60,180,150), 'Blue':(110,180,160)}
+def load_calibration():
+    profile = {
+        "White": [0, 20, 240],
+        "Yellow": [30, 170, 220],
+        "Orange": [15, 220, 230],
+        "Red": [0, 220, 190],
+        "Green": [60, 180, 170],
+        "Blue": [110, 190, 170],
+    }
     if os.path.exists(CALIB_FILE):
-        with open(CALIB_FILE,'r') as f:
-            for k,v in json.load(f).items(): defaults[k] = tuple(v)
-    return defaults
+        try:
+            with open(CALIB_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                for color, hsv in loaded.items():
+                    if color in profile and isinstance(hsv, list) and len(hsv) == 3:
+                        profile[color] = hsv
+        except (json.JSONDecodeError, OSError):
+            pass
+    return profile
 
-def run_cyber_extract(image_bytes, expected_center, scale_percent):
-    img = cv2.imdecode(np.asarray(bytearray(image_bytes.read()), dtype=np.uint8), 1)
-    if img is None: return None, None, False
-    
-    # Auto Brightness & Low Light Warning
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    avg_bright = np.mean(gray)
-    is_low_light = avg_bright < 60
-    if avg_bright < 100: img = cv2.convertScaleAbs(img, alpha=1.2, beta=30)
-    
-    h, w = img.shape[:2]
-    gs = int(min(h, w) * (scale_percent / 100.0))
-    sx, sy = (w - gs) // 2, (h - gs) // 2
-    warped = cv2.resize(img[sy:sy+gs, sx:sx+gs], (300, 300))
-    debug_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB)
-    
-    std_colors, detected = get_calibrated_colors(), ['White']*9
-    sat_w = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)[:,:,1]
-    
+
+def save_calibration(profile):
+    with open(CALIB_FILE, "w", encoding="utf-8") as f:
+        json.dump(profile, f, ensure_ascii=False, indent=2)
+
+
+def _hsv_to_lab(hsv):
+    hsv_pixel = np.uint8([[[hsv[0], hsv[1], hsv[2]]]])
+    bgr = cv2.cvtColor(hsv_pixel, cv2.COLOR_HSV2BGR)
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)[0][0]
+    return lab
+
+
+def detect_face_colors(image_bytes, expected_center, manual_grid_size=65, diagnostic=False):
+    raw = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
+    frame = cv2.imdecode(raw, cv2.IMREAD_COLOR)
+    if frame is None:
+        return None
+
+    # 1) Preprocessing: padding, normalize, gray, blur
+    h, w = frame.shape[:2]
+    pad = int(min(h, w) * 0.08)
+    padded = cv2.copyMakeBorder(frame, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=(0, 0, 0))
+    gray = cv2.cvtColor(padded, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    # 2) Feature extraction & clustering proxy via adaptive threshold + contours
+    thresh = cv2.adaptiveThreshold(
+        blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 21, 3
+    )
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    candidates = []
+    for cnt in contours:
+        x, y, cw, ch = cv2.boundingRect(cnt)
+        area = cw * ch
+        ratio = cw / float(ch + 1e-6)
+        if 500 < area < 60000 and 0.7 < ratio < 1.3:
+            candidates.append((x, y, cw, ch))
+
+    warped = None
+    debug = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB)
+    if candidates:
+        # 3) Perspective warping (approximate quadrilateral by envelope)
+        xs = [x for x, _, cw, _ in candidates] + [x + cw for x, _, cw, _ in candidates]
+        ys = [y for _, y, _, ch in candidates] + [y + ch for _, y, _, ch in candidates]
+        x0, x1 = max(0, min(xs)), min(padded.shape[1], max(xs))
+        y0, y1 = max(0, min(ys)), min(padded.shape[0], max(ys))
+        roi = padded[y0:y1, x0:x1]
+        if roi.size > 0:
+            warped = cv2.resize(roi, (300, 300))
+            cv2.rectangle(debug, (x0, y0), (x1, y1), (0, 255, 255), 2)
+
+    # Manual fallback
+    if warped is None:
+        hh, ww = padded.shape[:2]
+        size = int(min(hh, ww) * (manual_grid_size / 100.0))
+        sx, sy = (ww - size) // 2, (hh - size) // 2
+        warped = cv2.resize(padded[sy : sy + size, sx : sx + size], (300, 300))
+        cv2.rectangle(debug, (sx, sy), (sx + size, sy + size), (255, 100, 100), 2)
+
+    hsv_img = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)
+    sat = hsv_img[:, :, 1]
+    calibration = load_calibration()
+    calibration_lab = {k: _hsv_to_lab(v) for k, v in calibration.items()}
+
+    stickers = ["White"] * 9
     for r in range(3):
         for c in range(3):
-            tx, ty = int((c+0.5)*100), int((r+0.5)*100)
-            y1, y2, x1, x2 = max(0,ty-35), min(300,ty+35), max(0,tx-35), min(300,tx+35)
-            moms = cv2.moments(sat_w[y1:y2, x1:x2])
-            fx, fy = (x1 + int(moms["m10"]/moms["m00"]), y1 + int(moms["m01"]/moms["m00"])) if moms["m00"]>50 else (tx, ty)
-            
-            roi = warped[max(0,fy-8):min(300,fy+8), max(0,fx-8):min(300,fx+8)]
-            bgr = np.median(roi[2:-2, 2:-2], axis=(0,1)).astype(np.uint8) if roi.size>0 else [0,0,0]
-            lab = cv2.cvtColor(np.uint8([[[bgr[0],bgr[1],bgr[2]]]]), cv2.COLOR_BGR2LAB)[0][0]
-            
-            min_d, best_c = 999.0, 'White'
-            for name, (hs,ss,vs) in std_colors.items():
-                t_lab = cv2.cvtColor(cv2.cvtColor(np.uint8([[[hs,ss,vs]]]), cv2.COLOR_HSV2BGR), cv2.COLOR_BGR2LAB)[0][0]
-                dV = np.sqrt(0.5*(float(lab[0])-t_lab[0])**2 + 2.5*(float(lab[1])-t_lab[1])**2 + 2.5*(float(lab[2])-t_lab[2])**2)
-                if dV < min_d: min_d, best_c = dV, name
-            detected[r*3+c] = best_c
-            cv2.circle(debug_warped, (fx, fy), 12, (255,255,255), 2)
-            
-    detected[4] = expected_center
-    return detected, debug_warped, is_low_light, True
+            tx, ty = int((c + 0.5) * 100), int((r + 0.5) * 100)
 
-# --- 3. SESSION INITIALIZATION ---
-init_defaults = {
-    'cube_state': {f: (['White']*4 + [CENTER_COLORS[f]] + ['White']*4) for f in FACES},
-    'processed_photos': {}, 'cube_size': 60, 'auto_advance': True, 'uploader_key_version': 1, 
-    'programmatic_face': FACES[0], 'last_solution': None, 'pending_speech': None
-}
-for k, v in init_defaults.items():
-    if k not in st.session_state: st.session_state[k] = v
+            # 4) Sub-pixel refinement by local saturation centroid
+            y1, y2 = max(0, ty - 30), min(300, ty + 30)
+            x1, x2 = max(0, tx - 30), min(300, tx + 30)
+            patch = sat[y1:y2, x1:x2]
+            moments = cv2.moments(patch)
+            if moments["m00"] > 20:
+                fx = x1 + int(moments["m10"] / moments["m00"])
+                fy = y1 + int(moments["m01"] / moments["m00"])
+            else:
+                fx, fy = tx, ty
 
-def render_flat_map(state):
-    layout = {'Up':(0,1), 'Left':(1,0), 'Front':(1,1), 'Right':(1,2), 'Back':(1,3), 'Down':(2,1)}
-    html = '<div style="display:grid; grid-template-columns:repeat(4,45px); gap:6px; justify-content:center; background:rgba(0,0,0,0.5); padding:10px; border-radius:12px; border:1px solid rgba(0,229,255,0.2);">'
+            sample = warped[max(0, fy - 4) : min(300, fy + 4), max(0, fx - 4) : min(300, fx + 4)]
+            median_bgr = np.median(sample, axis=(0, 1))
+            sample_lab = cv2.cvtColor(np.uint8([[median_bgr]]), cv2.COLOR_BGR2LAB)[0][0]
+
+            # 5) Color matching in LAB distance
+            best_name = "White"
+            best_dist = 10e9
+            for color_name, target_lab in calibration_lab.items():
+                dist = float(np.linalg.norm(sample_lab.astype(np.float32) - target_lab.astype(np.float32)))
+                if dist < best_dist:
+                    best_dist = dist
+                    best_name = color_name
+
+            idx = r * 3 + c
+            stickers[idx] = best_name
+            cv2.circle(debug, (fx, fy), 8, (0, 255, 255), 2)
+
+    stickers[4] = expected_center
+    result = {
+        "stickers": stickers,
+        "warped_rgb": cv2.cvtColor(warped, cv2.COLOR_BGR2RGB),
+        "debug_rgb": debug if diagnostic else None,
+    }
+    return result
+
+
+def render_face_editor(face_name):
+    st.markdown("#### Click-to-Edit")
+    colors_cycle = list(HEX_COLORS.keys())
     for r in range(3):
-        for c in range(4):
-            f_k = next((f for f, p in layout.items() if p == (r, c)), None)
-            if f_k:
-                grid_html = '<div style="display:grid; grid-template-columns:repeat(3,1fr); gap:1px; border:1px solid rgba(0,229,255,0.3);">'
-                for clr in state[f_k]: html += f'<div style="width:12px; height:12px; background:{HEX_COLORS[clr]};"></div>'
-                html += grid_html + '</div>'
-            else: html += '<div></div>'
-    return html + '</div>'
+        cols = st.columns(3)
+        for c in range(3):
+            idx = r * 3 + c
+            now_color = st.session_state.cube_state[face_name][idx]
+            label = f"{now_color[:2]}"
+            if cols[c].button(label, key=f"edit_{face_name}_{idx}", use_container_width=True):
+                if idx == 4:
+                    st.warning("Center color is fixed by cube orientation.")
+                else:
+                    next_idx = (colors_cycle.index(now_color) + 1) % len(colors_cycle)
+                    st.session_state.cube_state[face_name][idx] = colors_cycle[next_idx]
+                    st.session_state.solution = None
+                    st.rerun()
 
-# --- 4. SIDEBAR DASHBOARD ---
-with st.sidebar:
-    st.title("📡 Cyber Terminal")
-    app_mode = st.radio("Access Level:", ["📸 Scanner", "⚙️ Calibration"], label_visibility="collapsed")
-    
-    render_interactive_nav()
-    
-    st.markdown("#### 📊 TELEMETRY")
-    all_stks = [s for f in FACES for s in st.session_state.cube_state[f]]
-    counts = {c: all_stks.count(c) for c in HEX_COLORS.keys()}
-    cols = st.columns(3)
-    for i, color in enumerate(list(HEX_COLORS.keys())):
-        with cols[i%3]: st.markdown(f"{COLOR_EMOJIS[color]} `{counts[color]}/9`")
-    
-    st.divider()
-    if st.button("🗑️ PURGE DATA", use_container_width=True):
-        st.session_state.processed_photos = {}; st.session_state.uploader_key_version += 1; st.rerun()
 
-# --- 5. MAIN SCANNER ---
-if app_mode == "📸 Scanner":
-    if not os.path.exists(CALIB_FILE):
-        st.warning("⚠️ CRITICAL: Calibration profile missing. Please calibrate colors for accurate results.")
+def render_sidebar():
+    with st.sidebar:
+        st.header("Global Sidebar")
+        mode = st.radio("App Mode", ["Scan & Solve", "Tune Colors"], index=0)
+        st.divider()
 
-    curr = st.session_state.programmatic_face
-    progress = len(st.session_state.processed_photos) / 6.0
-    st.progress(progress, text=f"UPLINK STATUS: {int(progress*100)}%")
-    
-    col_nav1, col_nav2, col_nav3 = st.columns([1,3,1])
-    with col_nav1: 
-        if st.button("⬅️"): st.session_state.programmatic_face = FACES[(FACES.index(curr)-1)%6]; st.rerun()
-    with col_nav2: st.markdown(f"<h3 style='text-align:center; color:#00e5ff; text-shadow:0 0 10px #00e5ff;'>{curr.upper()} PROTOCOL</h3>", unsafe_allow_html=True)
-    with col_nav3: 
-        if st.button("➡️"): st.session_state.programmatic_face = FACES[(FACES.index(curr)+1)%6]; st.rerun()
+        st.markdown("#### Interactive Map")
+        for row in range(3):
+            cols = st.columns(4)
+            for col in range(4):
+                face = next((f for f, pos in FACE_LAYOUT.items() if pos == (row, col)), None)
+                if not face:
+                    cols[col].write("")
+                    continue
+                done = face in st.session_state.scanned_faces
+                flag = " ✅" if done else ""
+                if cols[col].button(f"{face[0]}{flag}", key=f"goto_{face}", use_container_width=True):
+                    st.session_state.active_face = face
+                    st.rerun()
 
-    c_cam, c_log = st.columns([1.5, 1])
-    with c_cam:
-        guide = ORIENTATION_GUIDE[curr]
-        st.info(f"🧭 {guide[2]}")
-        st.markdown(f'''<div style="position:relative;">
-            <div class="pro-corners"><div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div></div>
-            <div style="position:absolute; top:35px; width:100%; text-align:center; color:#00e5ff; font-weight:bold; z-index:1000; pointer-events:none;">
-                {guide[0].upper()} CORE DETECTION<br><span style="font-size:10px; opacity:0.6;">ANALYZING MATRIX...</span>
-            </div>
-        ''', unsafe_allow_html=True)
-        # BIND TO KEY VERSION FOR CAMERA RESET
-        buf = st.camera_input("Scanner", key=f"v_{st.session_state.uploader_key_version}", label_visibility="collapsed")
-        st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown("#### Advanced Tools")
+        diagnostic = st.checkbox("Diagnostic Vision", value=False)
+        manual_grid_size = st.slider("Manual Grid Size", 45, 85, 65, 1)
+        auto_advance = st.checkbox("Auto-advance", value=True)
+        speed = st.slider("3D Speed", 0.25, 2.0, st.session_state.speed, 0.05)
+        st.session_state.speed = speed
 
-        # SPACEBAR CAPTURE JS BRIDGE
-        components.html("""<script>
-            const doc = window.parent.document;
-            doc.addEventListener('keydown', function(e) {
-                if (e.code === 'Space') {
-                    const buttons = doc.querySelectorAll('button');
-                    const captureBtn = Array.from(buttons).find(el => el.innerText.includes('Scanner'));
-                    if (captureBtn) captureBtn.click();
-                }
-            });
-        </script>""", height=0)
+        if st.button("Reset Session", use_container_width=True):
+            st.session_state.clear()
+            st.rerun()
 
-        if buf:
-            d, db, low_l, ok = run_cyber_extract(buf, CENTER_COLORS[curr], st.session_state.cube_size)
-            if ok:
-                st.session_state.cube_state[curr] = d
-                st.image(db, caption="RAW SENSOR DATA (UNMIRRORED)", use_container_width=True)
-                if low_l: st.markdown('<div class="low-light-warning">⚠️ [SIGNAL_WEAK]: INCREASE LIGHT</div>', unsafe_allow_html=True)
-                
-                if d[4] == CENTER_COLORS[curr]:
-                    st.success("🎯 SIGNAL LOCKED")
-                    play_sfx('lock')
-                    if st.button("📥 ENGAGE SAVE", type="primary", use_container_width=True):
-                        st.session_state.processed_photos[curr] = True
-                        st.session_state.uploader_key_version += 1 # RESET CAMERA
-                        un = [f for f in FACES if f not in st.session_state.processed_photos]
-                        if un: 
-                            st.session_state.programmatic_face = un[0]
-                            st.session_state.pending_speech = f"Signal saved. Moving to {un[0]} protocol."
-                        else: st.balloons(); st.session_state.pending_speech = "All matrices synced. Logic ready."
-                        st.rerun()
-                else: st.error("⚠️ SIGNAL MISMATCH: CORE COLOR ERROR")
+    return mode, diagnostic, manual_grid_size, auto_advance
 
-    with c_log:
-        st.markdown("#### 📟 DATA LOGS")
-        st.code(f"[LOG]: SCANNING {curr.upper()}...\n[COLOR]: {d[4] if buf else 'WAITING'}\n[SECURE]: ENGAGED", language="ini")
-        st.markdown("#### 🕹️ MANUAL OVERRIDE")
-        for r in range(3):
-            ecols = st.columns(3)
-            for c in range(3):
-                idx = r*3 + c
-                v = st.session_state.cube_state[curr][idx]
-                if ecols[c].button(f"{COLOR_EMOJIS[v]}", key=f"ed_{curr}_{idx}", use_container_width=True):
-                    seq = list(COLOR_EMOJIS.keys())
-                    st.session_state.cube_state[curr][idx] = seq[(seq.index(v)+1)%6]; st.rerun()
+
+def render_scan_solve(diagnostic, manual_grid_size, auto_advance):
+    active = st.session_state.active_face
+    progress = len(st.session_state.scanned_faces) / 6.0
+
+    st.title("🧊 Scan & Solve")
+    st.progress(progress, text=f"Scanned {len(st.session_state.scanned_faces)} / 6 faces")
+    st.subheader(f"Current Face: {active}")
+    st.info(ORIENTATION_GUIDE[active])
+
+    left, right = st.columns([1.5, 1])
+    with left:
+        image = st.camera_input("Capture current face")
+        if image is not None:
+            result = detect_face_colors(
+                image,
+                expected_center=CENTER_COLORS[active],
+                manual_grid_size=manual_grid_size,
+                diagnostic=diagnostic,
+            )
+            if result:
+                st.session_state.last_scan = result
+                st.session_state.cube_state[active] = result["stickers"]
+                st.image(result["warped_rgb"], caption="Warped 300x300 face", use_container_width=True)
+                if result["debug_rgb"] is not None:
+                    st.image(result["debug_rgb"], caption="Diagnostic Vision", use_container_width=True)
+            else:
+                st.error("Failed to parse image. Try better lighting and alignment.")
+
+    with right:
+        render_face_editor(active)
+        if st.button("Save This Face", type="primary", use_container_width=True):
+            st.session_state.scanned_faces.add(active)
+            st.session_state.solution = None
+            if auto_advance:
+                remains = [f for f in FACES if f not in st.session_state.scanned_faces]
+                if remains:
+                    st.session_state.active_face = remains[0]
+            st.rerun()
+
+        st.markdown("#### Face Preview")
+        preview_cols = st.columns(3)
+        stickers = st.session_state.cube_state[active]
+        for idx, color in enumerate(stickers):
+            preview_cols[idx % 3].markdown(
+                f"<div style='height:34px;background:{HEX_COLORS[color]};border:1px solid #333;border-radius:4px;margin:3px;'></div>",
+                unsafe_allow_html=True,
+            )
 
     st.divider()
-    if st.button("🚀 INITIATE SOLVE PROTOCOL", type="primary", use_container_width=True, disabled=(len(st.session_state.processed_photos)<6)):
-        with st.spinner("Analyzing matrix..."):
-            ok, msg = validate_cube_state(st.session_state.cube_state)
-            if ok: 
-                st.session_state.last_solution = solve_cube(st.session_state.cube_state)
-                play_sfx('solve')
-                st.session_state.pending_speech = "Solution generated. Ready for playback."
-            else: st.error(msg)
+    solve_disabled = len(st.session_state.scanned_faces) < 6
+    if st.button("VALIDATE & SOLVE", type="primary", use_container_width=True, disabled=solve_disabled):
+        valid, message = validate_cube_state(st.session_state.cube_state)
+        if not valid:
+            st.error(message)
+        else:
+            ok, solution_or_error = solve_cube(st.session_state.cube_state)
+            if not ok:
+                st.error(solution_or_error)
+            else:
+                st.session_state.solution = solution_or_error
+                st.success("Solution generated successfully.")
 
-    if st.session_state.last_solution:
-        sol = st.session_state.last_solution
-        # Map current face to 3D starting angle
-        views = {'Front':(0,0), 'Right':(0,90), 'Back':(0,180), 'Left':(0,270), 'Up':(90,0), 'Down':(-90,0)}
-        lat, lon = views.get(curr, (0,0))
-        
-        st.markdown(f"""<div style="background:rgba(0,0,0,0.8); border:2px solid #00e5ff; border-radius:15px; padding:20px; text-align:center;">
-            <h3 style="color:#00e5ff; font-family:'Courier New';">OPTIMAL SOLUTION GENERATED</h3>
-            <p style="color:#fff;">{sol}</p>
-            <script src="https://cubing.net" type="module"></script>
-            <twisty-player alg="{sol}" control-panel="bottom-row" background="none" 
-                           camera-latitude="{lat}" camera-longitude="{lon}"
-                           style="width:100%; height:320px;"></twisty-player>
-        </div>""", unsafe_allow_html=True)
+    if st.session_state.solution:
+        st.markdown("### 3D Solution Player")
+        sp = st.session_state.speed
+        st.code(st.session_state.solution, language="text")
+        st.markdown(
+            f"""
+            <script src="https://cdn.cubing.net/js/cubing/twisty" type="module"></script>
+            <twisty-player
+                alg="{st.session_state.solution}"
+                visualization="PG3D"
+                control-panel="bottom-row"
+                tempo-scale="{sp}"
+                style="width:100%;height:420px;">
+            </twisty-player>
+            """,
+            unsafe_allow_html=True,
+        )
 
-elif app_mode == "⚙️ Calibration":
-    st.title("⚙️ Calibration Terminal")
-    target_c = st.selectbox("Assign Click to Spectrum:", list(COLOR_EMOJIS.keys()))
-    buf = st.camera_input("Sample")
-    if buf:
-        img_bgr = cv2.imdecode(np.asarray(bytearray(buf.read()), dtype=np.uint8), 1)
-        res = streamlit_image_coordinates(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
-        if res:
-            hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)[res['y'], res['x']].tolist()
-            if st.button(f"UPLOAD SPECTRUM"):
-                cal = get_calibrated_colors(); cal[target_c] = hsv
-                with open(CALIB_FILE,'w') as f: json.dump(cal, f); st.rerun()
 
-# --- 6. ASYNC VOICE ENGINE & FOOTER ---
-if st.session_state.pending_speech:
-    speak(st.session_state.pending_speech)
-    st.session_state.pending_speech = None
+def render_tune_colors():
+    st.title("⚙️ Tune Colors")
+    st.caption("Click cube sticker on snapshot to update HSV calibration profile.")
 
-st.markdown("---")
-ft_cols = st.columns(4)
-with ft_cols[0]: st.caption("📡 UPLINK: STABLE")
-with ft_cols[1]: st.caption(f"💾 CACHE: {len(st.session_state.processed_photos)}/6")
-with ft_cols[2]: st.caption(f"🛡️ SECURE: {'LOCKED' if st.session_state.last_solution else 'PENDING'}")
-with ft_cols[3]: st.caption("⚡ ENGINE: KOCIEMBA_V2")
-if not st.session_state.processed_photos:
-    st.toast("Pro Tip: Hold the cube steady for 1s before capturing.", icon="🧊")
+    profile = load_calibration()
+    target_color = st.selectbox("Target color", list(HEX_COLORS.keys()))
+    image = st.camera_input("Capture calibration sample")
+
+    if image is not None:
+        raw = np.asarray(bytearray(image.read()), dtype=np.uint8)
+        frame = cv2.imdecode(raw, cv2.IMREAD_COLOR)
+        if frame is None:
+            st.error("Failed to load camera frame.")
+            return
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        selected = streamlit_image_coordinates(rgb, key="calibration_pick")
+        st.image(rgb, caption="Click a sticker area", use_container_width=True)
+        if selected:
+            x, y = selected["x"], selected["y"]
+            y1, y2 = max(0, y - 4), min(frame.shape[0], y + 4)
+            x1, x2 = max(0, x - 4), min(frame.shape[1], x + 4)
+            roi = frame[y1:y2, x1:x2]
+            hsv_value = cv2.cvtColor(np.median(roi, axis=(0, 1)).astype(np.uint8).reshape(1, 1, 3), cv2.COLOR_BGR2HSV)[
+                0
+            ][0].tolist()
+            st.write(f"Sample HSV: `{hsv_value}`")
+            if st.button(f"Save HSV to {target_color}", type="primary"):
+                profile[target_color] = hsv_value
+                save_calibration(profile)
+                st.success("Saved to calibration_profile.json")
+
+    st.markdown("#### Current Profile")
+    st.json(profile)
+
+
+init_session()
+mode, diagnostic, manual_grid_size, auto_advance = render_sidebar()
+
+if mode == "Scan & Solve":
+    render_scan_solve(diagnostic, manual_grid_size, auto_advance)
+else:
+    render_tune_colors()
