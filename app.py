@@ -205,23 +205,31 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
     # AR Overlay: Project grid back to the WORK image (650px high)
     draw_map = {'White': (255,255,255), 'Yellow': (0,255,255), 'Orange': (0,165,255), 'Red': (0,0,255), 'Green': (0,255,0), 'Blue': (255,0,0)}
     
-    # Sort best_cnt for M_inv (must match dst order)
-    pts_w = best_cnt.reshape(4, 2).astype("float32")
-    s = pts_w.sum(axis=1)
-    diff = np.diff(pts_w, axis=1)
+    # 🌟 Precision Refinement: Contract the area by 10% to hit stickers, not edges
+    raw_pts = best_cnt.reshape(4, 2).astype("float32")
+    center_p = np.mean(raw_pts, axis=0)
+    contracted_pts = center_p + 0.90 * (raw_pts - center_p)
+    
+    # Sort for M_inv
+    s = contracted_pts.sum(axis=1)
+    diff = np.diff(contracted_pts, axis=1)
     rect_w = np.zeros((4, 2), dtype="float32")
-    rect_w[0], rect_w[2] = pts_w[np.argmin(s)], pts_w[np.argmax(s)]
-    rect_w[1], rect_w[3] = pts_w[np.argmin(diff)], pts_w[np.argmax(diff)]
+    rect_w[0], rect_w[2] = contracted_pts[np.argmin(s)], contracted_pts[np.argmax(s)]
+    rect_w[1], rect_w[3] = contracted_pts[np.argmin(diff)], contracted_pts[np.argmax(diff)]
     
     M_inv = cv2.getPerspectiveTransform(dst, rect_w)
     for r in range(3):
         for c in range(3):
-            m = 10
-            # Define cell edges in 300x300 warped space
-            pts_c = np.array([[[c*100+m, r*100+m], [(c+1)*100-m, r*100+m], [(c+1)*100-m, (r+1)*100-m], [c*100+m, (r+1)*100-m]]], dtype="float32")
-            # Project back to work_img coordinate space
+            # Project the exact center of each cell back to the original photo
+            pts_c = np.array([[[int((c+0.5)*100), int((r+0.5)*100)]]], dtype="float32")
             pts_orig = np.int32(cv2.perspectiveTransform(pts_c, M_inv))
-            cv2.polylines(tracking_img, [pts_orig], True, draw_map.get(detected[r*3+c], (0,255,0)), 3)
+            
+            # Draw a small SOLID circle at the sample point
+            c_name = detected[r*3+c]
+            bgr = draw_map.get(c_name, (0, 255, 0))
+            cv2.circle(tracking_img, (pts_orig[0][0][0], pts_orig[0][0][1]), 4, bgr, -1)
+            # Add a thin white border for visibility
+            cv2.circle(tracking_img, (pts_orig[0][0][0], pts_orig[0][0][1]), 5, (255,255,255), 1)
 
     detected[4] = expected_center
     return detected, debug_warped, pass_info, diag_imgs, cv2.cvtColor(tracking_img, cv2.COLOR_BGR2RGB)
