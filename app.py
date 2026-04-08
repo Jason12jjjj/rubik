@@ -477,6 +477,11 @@ if app_mode == "📸 Scan & Solve":
                 detected[4] = CENTER_COLORS[current_face]
 
                 st.session_state.cube_state[current_face] = detected
+                for i in range(9):
+                    btn_key = f"sel_{current_face}_{i}"
+                    if btn_key in st.session_state:
+                        del st.session_state[btn_key]
+
                 st.session_state[f"debug_{current_face}"] = debug_img
                 st.session_state[f"method_{current_face}"] = method
                 st.session_state.processed_photos[current_face] = cache_key
@@ -485,12 +490,13 @@ if app_mode == "📸 Scan & Solve":
                 st.session_state.scan_success_msg = f"🎉 **{current_face} Face** scanned successfully."
                 unscanned = [f for f in FACES if f not in st.session_state.processed_photos]
                 if unscanned:
-                    # 🌟 FIX #4: Use proxy variable to schedule the UI change for the next run
+                    # Use proxy variable to schedule the UI change for the next run
                     st.session_state.force_next_face = unscanned[0]
                     st.session_state.uploader_key_version += 1
                     st.session_state.scan_success_msg += f" Auto-advanced to **{unscanned[0]} Face**."
                 else:
                     st.session_state.scan_success_msg += " All 6 faces are ready to solve!"
+                    st.session_state.uploader_key_version += 1
 
                 st.rerun()
 
