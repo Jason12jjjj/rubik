@@ -109,10 +109,13 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
     img_padded = cv2.copyMakeBorder(img, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=[0, 0, 0])
     h_p, w_p = img_padded.shape[:2]
     
-    # Resize for processing speed
+    # Work image for processing
     work_h = 650
     work_w = int(w_p * (work_h / h_p))
     work_img = cv2.resize(img_padded, (work_w, work_h))
+    
+    # Tracking Image: Resized original for UI feedback
+    tracking_img = work_img.copy()
 
     # Pre-processing
     gray = cv2.cvtColor(work_img, cv2.COLOR_BGR2GRAY)
@@ -193,52 +196,39 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
 
     if best_cnt is None: 
         if "Pass 2" not in pass_info: pass_info = "Fail: No valid cube-like contours found in Pass 1 or 2."
-        return None, None, pass_info, diag_imgs
-
-    # --- Perspective Warping ---
-    # Convert points from 'work' size back to 'padded' size
-    pts_padded = (best_cnt.reshape(4, 2) * (h_p / work_h)).astype("float32")
+        return None, None, pass_info, diag_imgs, None
+        
+    # Draw green tracking outline on the original work image
+    cv2.drawContours(tracking_img, [best_cnt], -1, (0, 255, 0), 3)
     
-    # Sort points for WarpPerspective (TL, TR, BR, BL)
-    rect = np.zeros((4, 2), dtype="float32")
-    s = pts_padded.sum(axis=1)
-    rect[0], rect[2] = pts_padded[np.argmin(s)], pts_padded[np.argmax(s)]
-    diff = np.diff(pts_padded, axis=1)
-    rect[1], rect[3] = pts_padded[np.argmin(diff)], pts_padded[np.argmax(diff)]
-
-    dst = np.array([[0,0], [299,0], [299,299], [0,299]], dtype="float32")
-    M = cv2.getPerspectiveTransform(rect, dst)
-    # Perform warp on the PADDED image
-    warped = cv2.warpPerspective(img_padded, M, (300, 300))
-    debug_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB)
-
-    std_colors = get_calibrated_colors()
-    detected = ['White'] * 9
-    cell_sz = 100
+    # --- Augmented Reality Overlay on Tracking Image ---
+    # Define color BGR map for drawing on tracking_img
+    draw_map = {
+        'White': (255, 255, 255), 'Yellow': (0, 255, 255), 'Orange': (0, 165, 255),
+        'Red': (0, 0, 255), 'Green': (0, 255, 0), 'Blue': (255, 0, 0)
+    }
+    
+    # Calculate Inverse Perspective Transform back to the work_img space
+    M_inv = cv2.getPerspectiveTransform(dst, rect)
+    
     for r in range(3):
         for c in range(3):
-            cx, cy = int((c+0.5)*cell_sz), int((r+0.5)*cell_sz)
-            roi = warped[cy-12:cy+12, cx-12:cx+12]
-            if roi.size == 0: continue
+            m = 5
+            x1, y1 = c*100 + m, r*100 + m
+            x2, y2 = (c+1)*100 - m, (r+1)*100 - m
+            pts_warped = np.array([[[x1, y1], [x2, y1], [x2, y2], [x1, y2]]], dtype="float32")
+            pts_orig = cv2.perspectiveTransform(pts_warped, M_inv)
+            pts_orig = np.int32(pts_orig)
             
-            bgr_avg = np.median(roi, axis=(0,1)).astype(np.uint8)
-            pixel_lab = cv2.cvtColor(np.uint8([[[bgr_avg[0], bgr_avg[1], bgr_avg[2]]]]), cv2.COLOR_BGR2LAB)[0][0]
-            
-            min_dist, best_c = float('inf'), 'White'
-            for c_name, (hs, ss, vs) in std_colors.items():
-                std_lab = cv2.cvtColor(cv2.cvtColor(np.uint8([[[hs, ss, vs]]]), cv2.COLOR_HSV2BGR), cv2.COLOR_BGR2LAB)[0][0]
-                # Lab distance (weighted for perceptibility)
-                d = np.sqrt(0.5*(int(pixel_lab[0])-int(std_lab[0]))**2 + 1.25*(int(pixel_lab[1])-int(std_lab[1]))**2 + (int(pixel_lab[2])-int(std_lab[2]))**2)
-                if d < min_dist: min_dist, best_c = d, c_name
-            
-            detected[r*3+c] = best_c
-            cv2.circle(debug_warped, (cx, cy), 15, (255, 255, 255), 2)
-            # Smaller, thinner text to avoid 'full view overlap'
-            cv2.putText(debug_warped, best_c, (cx-25, cy+40), 0, 0.4, (0,0,0), 2)
-            cv2.putText(debug_warped, best_c, (cx-25, cy+40), 0, 0.4, (255,255,255), 1)
+            c_name = detected[r*3+c]
+            bgr = draw_map.get(c_name, (0, 255, 0))
+            cv2.polylines(tracking_img, [pts_orig], True, bgr, 3)
+
+    # Convert to RGB for UI ONLY after all BGR drawing is complete
+    tracking_img = cv2.cvtColor(tracking_img, cv2.COLOR_BGR2RGB)
 
     detected[4] = expected_center
-    return detected, debug_warped, pass_info, diag_imgs
+    return detected, debug_warped, pass_info, diag_imgs, tracking_img
 
 def run_manual_grid_extract(image_bytes, expected_center, scale_percent):
     file_bytes = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
@@ -382,8 +372,15 @@ if app_mode == "📸 Scan & Solve":
                 
                 # BRANCH: Auto-Detect vs Manual Alignment
                 if st.session_state.auto_detect:
-                    d, db, info, diags = auto_detect_cube_face(act, CENTER_COLORS[curr], show_diag=st.session_state.get('show_diag'))
+                    d, db, info, diags, track = auto_detect_cube_face(act, CENTER_COLORS[curr], show_diag=st.session_state.get('show_diag'))
                     success = (d is not None)
+                    
+                    if success:
+                        st.session_state.cube_state[curr] = d
+                        t_col, r_col = st.columns([1, 1])
+                        with t_col: st.image(track, caption="🎯 Target Locked", use_container_width=True)
+                        with r_col: st.image(db, caption="📸 Color Result", use_container_width=True)
+                        st.success(msg_success)
                     
                     if st.session_state.get('show_diag'):
                         st.write(f"🔬 Diag: {info}")
@@ -391,20 +388,18 @@ if app_mode == "📸 Scan & Solve":
                             dcols = st.columns(len(diags))
                             for i, (name, img) in enumerate(diags.items()):
                                 with dcols[i]: st.image(img, caption=name, use_container_width=True)
-                    
-                    msg_success = "✨ **I flattened the cube face!** Check the orientation and colors."
                     msg_fail = f"❌ Cube not found. (Diag: {info})" if st.session_state.get('show_diag') else "❌ Cube outline not found. Try to hold it flatter, or switch to Manual Mode."
                 else:
                     d, db, success = run_manual_grid_extract(act, CENTER_COLORS[curr], st.session_state.cube_size)
                     info = "Manual"
-                    msg_success = "📐 **Manual Alignment Used.** I captured the colors inside the center grid."
+                    msg_success = "📐 **Manual Alignment Used.**"
+                    if success:
+                        st.session_state.cube_state[curr] = d
+                        st.image(db, caption="📸 Capture Preview", use_container_width=True)
+                        st.success(msg_success)
                     msg_fail = "❌ Failed to read manual grid. Check your connection."
 
                 if success:
-                    st.session_state.cube_state[curr] = d
-                    st.image(db, caption="📸 Capture Preview", use_container_width=True)
-                    st.success(msg_success)
-                    
                     col_b1, col_b2 = st.columns(2)
                     with col_b1:
                         if st.button("✅ Confirm & Save", type="primary", use_container_width=True, key=f"conf_{key}"):
