@@ -67,6 +67,9 @@ if 'auto_detect' not in st.session_state:
 if 'auto_advance' not in st.session_state:
     st.session_state.auto_advance = True
 
+if 'show_guide' not in st.session_state:
+    st.session_state.show_guide = True
+
 if 'last_solution' not in st.session_state:
     st.session_state.last_solution = None
 
@@ -85,22 +88,23 @@ st.markdown("""
     /* Camera Guide Overlay */
     .camera-container {
         position: relative;
+        display: flex;
+        justify-content: center;
+        align-items: flex-start; /* Align to top to match video feed */
         width: 100%;
         max-width: 500px;
         margin: 0 auto;
     }
     .camera-guide {
         position: absolute;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, calc(-50% - 24px));
+        top: 130px; /* Precise offset for Streamlit's internal video frame */
         width: 280px;
         height: 280px;
-        border: 2px dashed rgba(255, 255, 255, 0.5);
+        border: 2px dashed rgba(255, 255, 255, 0.4);
         border-radius: 12px;
         pointer-events: none;
         z-index: 10;
-        box-shadow: 0 0 0 1000px rgba(0, 0, 0, 0.2);
+        box-shadow: 0 0 0 1000px rgba(0, 0, 0, 0.15);
     }
     .camera-guide::before {
         content: "CENTER CUBE HERE";
@@ -491,8 +495,9 @@ with st.sidebar:
         st.markdown(render_interactive_map(st.session_state.programmatic_face), unsafe_allow_html=True)
         st.divider()
         with st.expander("🛠️ Advanced Tools"):
-            st.session_state.show_diag = st.toggle("🔍 Diagnostic Vision", value=st.session_state.get('show_diag', False), help="Show intermediate CV steps to help debug detection issues.")
-            st.session_state.cube_size = st.slider("Manual Grid Size (%)", 10, 100, st.session_state.cube_size, help="Adjust the fixed overlay size in Manual Mode.")
+            st.session_state.show_diag = st.toggle("🔍 Diagnostic Vision", value=st.session_state.get('show_diag', False))
+            st.session_state.show_guide = st.toggle("🎯 Show Camera Guide", value=st.session_state.show_guide)
+            st.session_state.cube_size = st.slider("Manual Grid Size (%)", 10, 100, st.session_state.cube_size)
             if st.button("🗑️ Reset All Scans", use_container_width=True):
                 st.session_state.processed_photos = {}
                 st.session_state.shared_face_images = {}
@@ -534,7 +539,9 @@ if app_mode == "📸 Scan & Solve":
         
         # Wrapped camera in a container for the CSS guide
         if imth == "📹 Live":
-            st.markdown('<div class="camera-container"><div class="camera-guide"></div>', unsafe_allow_html=True)
+            st.markdown('<div class="camera-container">', unsafe_allow_html=True)
+            if st.session_state.show_guide:
+                st.markdown('<div class="camera-guide"></div>', unsafe_allow_html=True)
             buf = st.camera_input("P", key=f"c_{v}", label_visibility="collapsed")
             st.markdown('</div>', unsafe_allow_html=True)
         else:
