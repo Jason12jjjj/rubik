@@ -78,9 +78,32 @@ def render_3d_player(solution):
 # --- 4. SIDEBAR NAVIGATION ---
 with st.sidebar:
     st.title("🧩 Solver Console")
+    
+    # NAVIGATION SECTION
     st.markdown("### 🗺️ Context Map")
     st.markdown(render_interactive_map(st.session_state.programmatic_face), unsafe_allow_html=True)
     
+    # BEGINNER ACADEMY - Moved here for cleanliness
+    st.divider()
+    with st.expander("🎓 Beginner Academy", expanded=False):
+        tab1, tab2, tab3 = st.tabs(["Steps 1-2", "Steps 3-4", "Algs"])
+        with tab1:
+            st.markdown("**Step 1: The White Cross**")
+            st.caption("Create a 'Daisy' (white petals around yellow center), then align and flip.")
+            st.markdown("**Step 2: Corners**")
+            st.code("Sexy: R U R' U'", language="markdown")
+        with tab2:
+            st.markdown("**Step 3: Mid-layer**")
+            st.code("U R U' R' U' F' U F", language="markdown")
+            st.markdown("**Step 4: Top Cross**")
+            st.code("F R U R' U' F'", language="markdown")
+        with tab3:
+            st.markdown("**Sune (Orient):**")
+            st.code("R U R' U R U2 R'", language="markdown")
+            st.markdown("**Niklas (Permute):**")
+            st.code("U R U' L' U R' U' L", language="markdown")
+
+    # STATUS SECTION
     st.divider()
     st.markdown("### 📊 Inventory Check")
     all_stickers = [s for f in FACES for s in st.session_state.cube_state[f]]
@@ -127,7 +150,7 @@ with u2:
 
 st.info(f"💡 Select a color from the Palette then click the squares to fill.")
 
-c_edit, c_sol, c_guide = st.columns([1, 1.1, 1])
+c_edit, c_sol = st.columns([1, 1])
 
 with c_edit:
     st.markdown("#### 🎨 Color Palette")
@@ -173,38 +196,6 @@ with c_sol:
         else:
             st.success(f"✅ Solution Found: {sol}")
             render_3d_player(sol)
-
-with c_guide:
-    st.markdown("### 🎓 Beginner Academy")
-    tab1, tab2, tab3 = st.tabs(["LBL 1-2", "LBL 3-4", "Algorithms"])
-    
-    with tab1:
-        st.markdown("#### Step 1: The White Cross")
-        st.caption("Create a 'Daisy' with white petals around yellow center, then flip to white center.")
-        st.markdown("#### Step 2: First Layer Corners")
-        st.caption("Align a corner and use: **R U R' U'** until the corner is in place.")
-        st.code("Sexy Move: R U R' U'", language="markdown")
-    
-    with tab2:
-        st.markdown("#### Step 3: Second Layer")
-        st.caption("To insert a piece from top to right-middle:")
-        st.code("U R U' R' U' F' U F", language="markdown")
-        st.markdown("#### Step 4: Yellow Cross")
-        st.caption("Convert dot/line/L-shape to cross:")
-        st.code("F R U R' U' F'", language="markdown")
-        
-    with tab3:
-        st.markdown("#### Key Algorithms")
-        st.markdown("**Sune (Orient Corners):**")
-        st.code("R U R' U R U2 R'", language="markdown")
-        st.markdown("**Niklas (Position Corners):**")
-        st.code("U R U' L' U R' U' L", language="markdown")
-        st.markdown("**Last Layer Edges:**")
-        st.code("F2 U L R' F2 L' R U F2", language="markdown")
-
-# Footer info
-st.markdown("---")
-st.caption("Rubik's Solver Console: Precision logic with manual input. Verified by Kociemba Engine.")
 
 # Footer info
 st.markdown("---")
