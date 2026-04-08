@@ -9,6 +9,7 @@ import cv2
 import streamlit as st
 import streamlit.components.v1 as components
 from streamlit_image_coordinates import streamlit_image_coordinates
+from PIL import Image, ImageOps
 from rubiks_core import validate_cube_state, solve_cube
 
 # --- 1. System Configuration & State Management ---
@@ -107,11 +108,12 @@ if not st.session_state.get('auto_detect', True):
 # ─────────────────────────────────────────────────────────────────────────────
 def auto_detect_cube_region(img):
     h_img, w_img = img.shape[:2]
-    min_area = (min(h_img, w_img) * 0.20) ** 2
+    # 允許魔方在畫面中佔比縮小到 15%
+    min_area = (min(h_img, w_img) * 0.15) ** 2 
     max_area = (min(h_img, w_img) * 0.95) ** 2
 
     k_size = max(5, int(min(w_img, h_img) * 0.015))
-    k_size = k_size if k_size % 2 != 0 else k_size + 1
+    k_size = k_size if k_size % 2 != 0 else k_size + 1 
 
     def score_contours(cnts):
         best = None
@@ -122,11 +124,17 @@ def auto_detect_cube_region(img):
                 continue
 
             peri = cv2.arcLength(cnt, True)
-            approx = cv2.approxPolyDP(cnt, 0.04 * peri, True)
+            approx = cv2.approxPolyDP(cnt, 0.05 * peri, True)
             x, y, w, bh = cv2.boundingRect(cnt)
 
             aspect = min(w, bh) / max(w, bh)
-            if aspect < 0.70:
+            if aspect < 0.50:
+                continue
+
+            hull = cv2.convexHull(cnt)
+            hull_area = cv2.contourArea(hull)
+            solidity = area / float(hull_area) if hull_area > 0 else 0
+            if solidity < 0.85:
                 continue
 
             cx = x + w / 2.0
@@ -134,16 +142,11 @@ def auto_detect_cube_region(img):
             dist_to_center = ((cx - w_img / 2.0) ** 2 + (cy - h_img / 2.0) ** 2) ** 0.5
             max_dist = ((w_img / 2.0) ** 2 + (h_img / 2.0) ** 2) ** 0.5
             center_weight = max(0.1, 1.0 - (dist_to_center / max_dist))
-            
-            if dist_to_center > min(w_img, h_img) * 0.45:
-                continue
 
-            shape_bonus = 3.0 if len(approx) == 4 else (1.5 if len(approx) in [5, 6] else 0.5)
-            side = int(min(w, bh) * 0.92) 
-            if side <= 0:
-                continue
+            shape_bonus = 5.0 if len(approx) == 4 else (2.0 if len(approx) in [5, 6, 7, 8] else 0.5)
+            side = int(min(w, bh) * 0.90) 
 
-            score = area * aspect * shape_bonus * (center_weight ** 2)
+            score = area * aspect * shape_bonus * center_weight * (solidity ** 2)
 
             if score > best_score:
                 best_score = score
@@ -156,7 +159,8 @@ def auto_detect_cube_region(img):
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (k_size, k_size), 0)
-    edges = cv2.Canny(blurred, 30, 100)
+    edges = cv2.Canny(blurred, 20, 80) 
+    
     kernel_edge = cv2.getStructuringElement(cv2.MORPH_RECT, (k_size, k_size))
     closed_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel_edge, iterations=2)
     cnts_edge, _ = cv2.findContours(closed_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -166,13 +170,12 @@ def auto_detect_cube_region(img):
         return best_region
 
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    mask_sat = cv2.inRange(hsv, (0, 40, 40), (180, 255, 255))
+    mask_sat = cv2.inRange(hsv, (0, 30, 30), (180, 255, 255))
     clean = cv2.morphologyEx(mask_sat, cv2.MORPH_CLOSE, kernel_edge, iterations=3)
     clean = cv2.morphologyEx(clean, cv2.MORPH_OPEN, kernel_edge, iterations=2)
     cnts, _ = cv2.findContours(clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     return score_contours(cnts)
-
 
 def get_calibrated_colors():
     std_colors = {
@@ -218,8 +221,14 @@ def classify_color(bgr_pixel, std_colors):
 
 
 def extract_colors_from_image(image_bytes, expected_center):
-    raw = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
-    img = cv2.imdecode(raw, 1)
+    try:
+        pil_img = Image.open(image_bytes)
+        pil_img = ImageOps.exif_transpose(pil_img)
+        img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+    except Exception:
+        image_bytes.seek(0)
+        raw = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
+        img = cv2.imdecode(raw, 1)
 
     if img is None:
         st.error("❌ Could not decode the image. Please upload a valid JPG or PNG file.")
