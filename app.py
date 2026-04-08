@@ -127,7 +127,7 @@ def auto_detect_cube_region(img):
 
             aspect = min(w, bh) / max(w, bh)
             if aspect < 0.70:
-            continue
+                continue
 
             cx = x + w / 2.0
             cy = y + bh / 2.0
