@@ -194,60 +194,75 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
     warped = cv2.warpPerspective(img_padded, M, (300, 300))
     debug_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB)
     
-    # 💎 Deep Refinement: 9-Point Discovery
+    # --- Deep Alignment Refinement (Saturation Centroids) ---
     std_colors = get_calibrated_colors()
     detected = ['White'] * 9
-    refined_pts_warped = []
+    refined_pts_warped = [] 
     hsv_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)
     sat_map = hsv_warped[:,:,1]
+    
+    grid_metrics = [] # Meta for transparency
     
     for r in range(3):
         for c in range(3):
             tx, ty = int((c+0.5)*100), int((r+0.5)*100)
-            # Local Centroid Snap
             win = 35
             y1, y2, x1, x2 = max(0,ty-win), min(300,ty+win), max(0,tx-win), min(300,tx+win)
             roi_sat = sat_map[y1:y2, x1:x2]
-            mom = cv2.moments(roi_sat)
-            if mom["m00"] > 50:
-                snap_x, snap_y = x1 + int(mom["m10"]/mom["m00"]), y1 + int(mom["m01"]/mom["m00"])
-                dist = np.sqrt((snap_x-tx)**2 + (snap_y-ty)**2)
-                final_x, final_y = (snap_x, snap_y) if dist < 30 else (tx, ty)
+            moms = cv2.moments(roi_sat)
+            
+            snap_dx, snap_dy = 0, 0
+            if moms["m00"] > 50:
+                sx, sy = x1 + int(moms["m10"]/moms["m00"]), y1 + int(moms["m01"]/moms["m00"])
+                dist_snap = np.sqrt((sx-tx)**2 + (sy-ty)**2)
+                if dist_snap < 30:
+                    final_x, final_y = sx, sy
+                    snap_dx, snap_dy = sx - tx, sy - ty
+                else: 
+                    final_x, final_y = tx, ty
             else:
                 final_x, final_y = tx, ty
             
             refined_pts_warped.append((final_x, final_y))
-            
-            # --- CORE SAMPLE (Tiny 12x12 core for purity) ---
             roi = warped[final_y-6:final_y+6, final_x-6:final_x+6]
-            if roi.size == 0: continue
-            bgr_avg = np.median(roi, axis=(0,1)).astype(np.uint8)
+            bgr_avg = np.median(roi, axis=(0,1)).astype(np.uint8) if roi.size > 0 else [0,0,0]
             lab = cv2.cvtColor(np.uint8([[[bgr_avg[0], bgr_avg[1], bgr_avg[2]]]]), cv2.COLOR_BGR2LAB)[0][0]
             
+            # --- Color Scoring & Metadata ---
+            dists = {}
             min_d, best_c = float('inf'), 'White'
             for name, (hs,ss,vs) in std_colors.items():
                 sl = cv2.cvtColor(cv2.cvtColor(np.uint8([[[hs,ss,vs]]]), cv2.COLOR_HSV2BGR), cv2.COLOR_BGR2LAB)[0][0]
                 dL, da, db = float(lab[0])-float(sl[0]), float(lab[1])-float(sl[1]), float(lab[2])-float(sl[2])
-                # Minimal L-weight (0.1) for pure chromatic matching
-                d = np.sqrt(0.1*(dL**2) + 2.0*(da**2) + 2.0*(db**2))
-                if d < min_d: min_d, best_c = d, name
+                d_val = np.round(np.sqrt(0.1*(dL**2) + 2.0*(da**2) + 2.0*(db**2)), 1)
+                dists[name] = d_val
+                if d_val < min_d: min_d, best_c = d_val, name
             
             detected[r*3+c] = best_c
+            grid_metrics.append({
+                'slot': r*3+c,
+                'final_color': best_c,
+                'distances': dists,
+                'snap_offset': (snap_dx, snap_dy),
+                'confidence': np.round(100 - min_d, 1)
+            })
+            
             short = f"{COLOR_EMOJIS[best_c][0]}"
-            # Show diagnostic info on warped image
             cv2.circle(debug_warped, (final_x, final_y), 6, (255,255,255), 1)
             cv2.putText(debug_warped, f"{best_c[0]}", (final_x-5, final_y+5), 0, 0.4, (255,255,255), 1, cv2.LINE_AA)
 
     # --- AR Overlay (Full Resolution Feature-Locked) ---
-    # Map from 300x300 warped space directly back to the FULL RESOLUTION padded image
-    # Note: best_cnt_p is already scaled to img_padded resolution
-    M_inv_full = cv2.getPerspectiveTransform(dst, best_cnt_p)
+    best_cnt_scale = (best_cnt.astype("float32") * (h_p / work_h))
+    pts_w = best_cnt_scale.reshape(4, 2)
+    s = pts_w.sum(axis=1)
+    diff = np.diff(pts_w, axis=1)
+    rect_w = np.zeros((4, 2), dtype="float32")
+    rect_w[0], rect_w[2] = pts_w[np.argmin(s)], pts_w[np.argmax(s)]
+    rect_w[1], rect_w[3] = pts_w[np.argmin(diff)], pts_w[np.argmax(diff)]
+    M_inv_full = cv2.getPerspectiveTransform(dst, rect_w)
     
-    # We will draw on a full-res version of the original image
     ar_img = img_padded.copy()
     draw_map = {'White': (255,255,255), 'Yellow': (0,255,255), 'Orange': (0,165,255), 'Red': (0,0,255), 'Green': (0,255,0), 'Blue': (255,0,0)}
-    
-    # Dynamic point sizing based on resolution (avoid tiny dots on 4K)
     dot_radius = max(4, int(h_p / 150))
     font_scale = h_p / 1200.0
 
@@ -256,21 +271,15 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
         px, py = int(p_orig[0][0][0]), int(p_orig[0][0][1])
         c_name = detected[i]
         bgr = draw_map.get(c_name, (0, 255, 0))
-        
-        # Draw on FULL RESOLUTION image
         cv2.circle(ar_img, (px, py), dot_radius, bgr, -1)
         cv2.circle(ar_img, (px, py), dot_radius + 2, (255,255,255), max(1, int(dot_radius/4)))
-        
-        # Add text label nearby
         label_pos = (px + dot_radius + 5, py + dot_radius + 5)
         cv2.putText(ar_img, c_name[0], label_pos, 0, font_scale, (0,0,0), int(font_scale*4), cv2.LINE_AA)
         cv2.putText(ar_img, c_name[0], label_pos, 0, font_scale, (255,255,255), int(font_scale*2), cv2.LINE_AA)
 
-    # Crop the padding back out to get original resolution image
     final_ar = ar_img[pad:pad+h_p-2*pad, pad:pad+w_p-2*pad]
-
     detected[4] = expected_center
-    return detected, debug_warped, pass_info, diag_imgs, cv2.cvtColor(final_ar, cv2.COLOR_BGR2RGB)
+    return detected, debug_warped, pass_info, diag_imgs, cv2.cvtColor(final_ar, cv2.COLOR_BGR2RGB), grid_metrics
 
 def run_manual_grid_extract(image_bytes, expected_center, scale_percent):
     file_bytes = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
@@ -417,7 +426,9 @@ if app_mode == "📸 Scan & Solve":
                 msg_fail = "❌ Cube not found. Try to hold it flatter, or switch to Manual Mode."
                 
                 if st.session_state.auto_detect:
-                    d, db, info, diags, track = auto_detect_cube_face(act, CENTER_COLORS[curr], show_diag=st.session_state.get('show_diag'))
+                    res = auto_detect_cube_face(act, CENTER_COLORS[curr], show_diag=st.session_state.get('show_diag'))
+                    # Unpack 6 values: detected, debug_warped, info, diag_imgs, track_img, grid_metrics
+                    d, db, info, diags, track, metrics = res if len(res) == 6 else (None, None, "API Error", {}, None, None)
                     success = (d is not None)
                     
                     if success:
@@ -426,9 +437,28 @@ if app_mode == "📸 Scan & Solve":
                         with t_col: st.image(track, caption="🎯 Target Locked", use_container_width=True)
                         with r_col: st.image(db, caption="📸 Color Result", use_container_width=True)
                         st.success(msg_success)
+                        
+                        # 🔬 NEW: High-Transparency Diagnostic HUD
+                        if st.session_state.get('show_diag') and metrics:
+                            with st.expander("🔬 🔬 View Detailed Vision Metrics (HUD)", expanded=True):
+                                st.markdown("### 🧬 3x3 Grid Analysis")
+                                df_data = []
+                                for m in metrics:
+                                    row = {"Slot": m['slot']+1, "Color": m['final_color'], "Snap_XY": f"{m['snap_offset']}", "Conf%": m['confidence']}
+                                    # Add all 6 color distances
+                                    for color_name, dist in m['distances'].items():
+                                        row[f"d({color_name[0]})"] = dist
+                                    df_data.append(row)
+                                st.table(df_data)
+                                st.caption("💡 **Legend:** d(C) = Delta-E Distance (lower is closer). Snap_XY = offset from theoretical center.")
+                        
                     else:
-                        msg_fail = f"❌ Cube not found. (Diag: {info})" if st.session_state.get('show_diag') else msg_fail
-                        st.error(msg_fail)
+                        st.error(f"❌ Cube not found. (Diag: {info})")
+                        if st.session_state.get('show_diag') and diags:
+                            st.write("### 🖼️ Intermediate CV Steps")
+                            dcols = st.columns(len(diags))
+                            for i, (name, img) in enumerate(diags.items()):
+                                with dcols[i]: st.image(img, caption=name, use_container_width=True)
                 else:
                     d, db, success = run_manual_grid_extract(act, CENTER_COLORS[curr], st.session_state.cube_size)
                     info = "Manual"
