@@ -6,63 +6,75 @@ from rubiks_core import validate_cube_state, solve_cube
 # --- 1. SYSTEM CONFIG ---
 st.set_page_config(page_title="Pro Rubik's Solver", page_icon="🧊", layout="wide")
 
-# Custom CSS for Eye-Comfort Premium Look
+# Custom CSS for Studio Light (Paper-Sense) Premium Look
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap');
     
     html, body, [data-testid="stAppViewContainer"] {
         font-family: 'Outfit', sans-serif;
-        /* Eye-Comfort Background: Deep Slate */
-        background: #0f172a;
-        color: #94a3b8;
+        /* Studio Light Background: Soft Paper Gray */
+        background: #f3f4f6;
+        color: #1f2937;
     }
 
-    /* Glass Panels - Softer Contrast */
+    /* Glass Panels - Pure White High-Quality Glass */
     .glass-panel {
-        background: rgba(30, 41, 59, 0.7);
-        backdrop-filter: blur(8px);
-        border: 1px solid rgba(255, 255, 255, 0.05);
-        border-radius: 12px;
-        padding: 24px;
+        background: rgba(255, 255, 255, 0.8);
+        backdrop-filter: blur(12px);
+        border: 1px solid rgba(0, 0, 0, 0.05);
+        border-radius: 16px;
+        padding: 24 px;
         margin-bottom: 20px;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
     }
 
-    /* Button Styling - Reduced Glare */
+    /* Button Styling - Clean & Tactical */
     .stButton > button {
-        border-radius: 8px !important;
-        border: 1px solid rgba(148, 163, 184, 0.2) !important;
-        background: rgba(30, 41, 59, 0.5) !important;
-        color: #f1f5f9 !important;
+        border-radius: 10px !important;
+        border: 1px solid rgba(0, 0, 0, 0.1) !important;
+        background: #ffffff !important;
+        color: #374151 !important;
         transition: all 0.2s ease !important;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important;
     }
     
     .stButton > button:hover {
-        border-color: #38bdf8 !important;
-        background: rgba(56, 189, 248, 0.1) !important;
-        color: #38bdf8 !important;
+        border-color: #6366f1 !important;
+        background: #f9fafb !important;
+        color: #6366f1 !important;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.05) !important;
     }
 
-    /* Selection Indicator - Controlled Contrast */
+    /* Selection Indicator - Indigo Accent */
     .stButton > button[aria-pressed="true"] {
-        border: 2px solid #38bdf8 !important;
-        background: rgba(56, 189, 248, 0.15) !important;
+        border: 2px solid #6366f1 !important;
+        background: #eef2ff !important;
+        color: #6366f1 !important;
     }
     
     h1, h2, h3, h4 {
-        color: #f1f5f9 !important;
-        font-weight: 600 !important;
+        color: #111827 !important;
+        font-weight: 700 !important;
     }
 
     .inventory-card {
-        background: rgba(15, 23, 42, 0.6);
-        border-radius: 10px;
-        padding: 10px;
+        background: #ffffff;
+        border-radius: 12px;
+        padding: 12px;
         text-align: center;
-        border: 1px solid rgba(148, 163, 184, 0.1);
+        border: 1px solid rgba(0, 0, 0, 0.05);
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
     }
     
-    .inventory-err { color: #f87171 !important; font-weight: bold; }
+    .inventory-err { color: #ef4444 !important; font-weight: bold; }
+    
+    /* Tweaking standard streamlit sidebar for light mode */
+    [data-testid="stSidebar"] {
+        background-color: #ffffff;
+        border-right: 1px solid #e5e7eb;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -170,7 +182,7 @@ def render_sidebar_map():
                     st.rerun()
 
 def render_3d_player(solution):
-    """Embeds the Twisty Player with glass frame"""
+    """Embeds the Twisty Player with light-themed glass frame"""
     def inv_alg(s):
         r = []
         for m in reversed(s.split()):
@@ -179,7 +191,8 @@ def render_3d_player(solution):
             else: r.append(m+"'")
         return " ".join(r)
     speed = st.session_state.get('solve_speed', 1.0)
-    html = f"""<div style="background:rgba(0,0,0,0.4); backdrop-filter:blur(20px); border:1px solid rgba(0,229,255,0.3); border-radius:20px; padding:20px; box-shadow:0 15px 35px rgba(0,0,0,0.5);">
+    # Light-themed container for the 3D player
+    html = f"""<div style="background:rgba(255,255,255,0.6); backdrop-filter:blur(15px); border:1px solid rgba(0,0,0,0.05); border-radius:20px; padding:20px; box-shadow:0 10px 25px rgba(0,0,0,0.05);">
         <script src="https://cubing.net" type="module"></script>
         <twisty-player experimental-setup-alg="{inv_alg(solution)}" alg="{solution}" background="none" tempo-scale="{speed}" control-panel="bottom-row" style="width:100%; height:420px;"></twisty-player>
     </div>"""
