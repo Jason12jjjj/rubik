@@ -93,14 +93,14 @@ st.markdown("""
         position: absolute;
         top: 50%;
         left: 50%;
-        transform: translate(-50%, -50%);
+        transform: translate(-50%, calc(-50% - 24px));
         width: 280px;
         height: 280px;
         border: 2px dashed rgba(255, 255, 255, 0.5);
         border-radius: 12px;
         pointer-events: none;
         z-index: 10;
-        box-shadow: 0 0 0 1000px rgba(0, 0, 0, 0.3);
+        box-shadow: 0 0 0 1000px rgba(0, 0, 0, 0.2);
     }
     .camera-guide::before {
         content: "CENTER CUBE HERE";
@@ -123,7 +123,7 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
     file_bytes = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, 1)
     if img is None: 
-        return None, None, "No Data", {}, None, None, ["Fail: No image"]
+        return None, None, "No Data", {}, None, None, ["Fail: No image"], 0, 0
     
     pad = 40
     img_padded = cv2.copyMakeBorder(img, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=[0, 0, 0])
@@ -303,7 +303,7 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
 
     # --- 4. TRANSFORMATION & OUTPUT ---
     if len(best_cluster) < 4:
-        return None, None, "Searching...", diag_imgs, None, None, trace
+        return None, None, "Searching...", diag_imgs, None, None, trace, bright, sharp
 
     # Coordinate Extrapolation
     cluster_pts = np.array([c['center'] for c in best_cluster], dtype="float32")
