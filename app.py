@@ -154,6 +154,7 @@ def auto_detect_cube_face(image_bytes, expected_center):
     
     # Pass 2: Fallback to Canny + Dilation if Pass 1 found nothing or failed area check
     if best_cnt is None:
+        edges = cv2.Canny(blurred, 20, 100)
         edges = cv2.dilate(edges, np.ones((3,3)))
         cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
