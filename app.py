@@ -230,6 +230,7 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
         
         # Pick best cluster based on size (target 9) and regularity
         max_score = 0
+        best_reg_score = 0.0
         for cluster in all_clusters:
             if len(cluster) < 4: continue
             
@@ -249,8 +250,9 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
             
             if score > max_score:
                 max_score, best_cluster = score, cluster
+                best_reg_score = reg_score
         
-        trace.append(f"Locked cluster: {len(best_cluster)} stks (RegScore={reg_score:.2f}, FinalScore={max_score:.1f})")
+        trace.append(f"Locked cluster: {len(best_cluster)} stks (RegScore={best_reg_score:.2f}, FinalScore={max_score:.1f})")
         
         if len(best_cluster) >= 4:
             cluster_pts = np.array([c['center'] for c in best_cluster])
