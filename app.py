@@ -160,14 +160,27 @@ def auto_detect_cube_face(image_bytes, expected_center):
         
         max_area = 0
         for cnt in cnts:
+            # 🌟 Absolute Border Defense: Check bounding box proximity to frame edges
+            x, y, wc, hc = cv2.boundingRect(cnt)
+            if x < 15 or y < 15 or (x + wc) > (work_w - 15) or (y + hc) > (work_h - 15):
+                continue
+                
             area = cv2.contourArea(cnt)
-            # Pixel-Based Constraints: 10% < area < 60%
-            if (total_area * 0.10) < area < (total_area * 0.60):
-                peri = cv2.arcLength(cnt, True)
-                appr = cv2.approxPolyDP(cnt, 0.04 * peri, True)
+            # Area Constraint: 5% ~ 45% (more realistic for scan view)
+            if (total_area * 0.05) < area < (total_area * 0.45):
+                hull = cv2.convexHull(cnt)
+                peri = cv2.arcLength(hull, True)
+                appr = cv2.approxPolyDP(hull, 0.05 * peri, True)
+                
+                # Check for 4 vertices and aspect ratio
                 if len(appr) == 4 and area > max_area:
-                    max_area = area
-                    best_cnt = appr.reshape(4, 2)
+                    _, (bw, bh), _ = cv2.minAreaRect(appr)
+                    if bw > 0 and bh > 0:
+                        aspect_ratio = min(bw, bh) / max(bw, bh)
+                        # Aspect Ratio Constraint: min 0.7 (square-like)
+                        if aspect_ratio > 0.7:  
+                            max_area = area
+                            best_cnt = appr.reshape(4, 2)
 
     if best_cnt is None: return None, None, False
 
