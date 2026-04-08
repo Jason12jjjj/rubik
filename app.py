@@ -497,8 +497,8 @@ if app_mode == "📸 Scan & Solve":
                 detected, debug_img, method = extract_colors_from_image(active_buffer, CENTER_COLORS[current_face])
                 
                if detected is None:
-                    st.error(f"❌ **Auto-Detect Failed:** {debug_img}") 
-                    st.info("💡 **Quick Fix:** Click the `>` icon top-left to open the Sidebar, and turn **OFF** `Auto-Detect Cube`. This gives you a manual grid that ignores all background mess!")
+               st.error(f"❌ **Auto-Detect Failed:** {debug_img}") 
+               st.info("💡 **Quick Fix:** Click the `>` icon top-left to open the Sidebar, and turn **OFF** `Auto-Detect Cube`. This gives you a manual grid that ignores all background mess!")
                     
                     if current_face in st.session_state.processed_photos:
                         del st.session_state.processed_photos[current_face]
