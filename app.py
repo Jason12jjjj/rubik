@@ -56,13 +56,13 @@ if 'custom_std_colors' not in st.session_state:
         st.session_state.custom_std_colors = {}
 
 if 'cube_size' not in st.session_state:
-    st.session_state.cube_size = 50
+    st.session_state.cube_size = 60 # Default scale to match guide box
 
 if 'shared_face_images' not in st.session_state:
     st.session_state.shared_face_images = {}
 
 if 'auto_detect' not in st.session_state:
-    st.session_state.auto_detect = True
+    st.session_state.auto_detect = False # Pivot to Manual Alignment by default
 
 if 'auto_advance' not in st.session_state:
     st.session_state.auto_advance = True
@@ -97,26 +97,26 @@ st.markdown("""
     }
     .camera-guide {
         position: absolute;
-        top: 130px; /* Precise offset for Streamlit's internal video frame */
-        width: 280px;
-        height: 280px;
-        border: 2px dashed rgba(255, 255, 255, 0.4);
-        border-radius: 12px;
+        top: 130px; 
+        width: 260px; /* Aligned with 60% sample area */
+        height: 260px;
+        border: 3px dashed #00e5ff; /* Cyan for high visibility */
+        border-radius: 8px;
         pointer-events: none;
         z-index: 10;
-        box-shadow: 0 0 0 1000px rgba(0, 0, 0, 0.15);
+        box-shadow: 0 0 0 1000px rgba(0, 0, 0, 0.4);
     }
     .camera-guide::before {
-        content: "CENTER CUBE HERE";
+        content: "ALIGN CUBE HERE";
         position: absolute;
         top: -30px;
-        left: 50%;
-        transform: translateX(-50%);
-        color: white;
-        font-size: 12px;
+        left: 0;
+        width: 100%;
+        text-align: center;
+        color: #00e5ff;
         font-weight: bold;
-        white-space: nowrap;
-        text-shadow: 1px 1px 2px black;
+        font-size: 14px;
+        text-shadow: 0 0 5px rgba(0,0,0,1);
     }
 </style>
 """, unsafe_allow_html=True)
@@ -354,34 +354,45 @@ def run_manual_grid_extract(image_bytes, expected_center, scale_percent):
     if img is None: return None, None, False
     
     h, w = img.shape[:2]
-    # Use the scale requested by user or 50% default
     gs = int(min(h, w) * (scale_percent / 100.0))
     sx, sy = (w - gs) // 2, (h - gs) // 2
     
-    # Crop and resize to 300x300 to unify UI with Auto-detect
     cropped = img[sy:sy+gs, sx:sx+gs]
     warped = cv2.resize(cropped, (300, 300))
     debug_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB)
     
     std_colors = get_calibrated_colors()
     detected = ['White'] * 9
-    cell_sz = 100
+    hsv_w = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)
+    sat_w = hsv_w[:,:,1]
+    
     for r in range(3):
         for c in range(3):
-            cx, cy = int((c+0.5)*cell_sz), int((r+0.5)*cell_sz)
-            roi = warped[cy-10:cy+10, cx-10:cx+10]
-            if roi.size == 0: continue
-            b_a, g_a, r_a = np.median(roi, axis=(0,1)).astype(np.uint8)
-            lab = cv2.cvtColor(np.uint8([[[b_a,g_a,r_a]]]), cv2.COLOR_BGR2LAB)[0][0]
+            tx, ty = int((c+0.5)*100), int((r+0.5)*100)
+            y1, y2, x1, x2 = max(0,ty-35), min(300,ty+35), max(0,tx-35), min(300,tx+35)
+            roi_sat = sat_w[y1:y2, x1:x2]
+            moms = cv2.moments(roi_sat)
+            fx, fy = tx, ty
+            if moms["m00"] > 50:
+                sx_l, sy_l = x1 + int(moms["m10"]/moms["m00"]), y1 + int(moms["m01"]/moms["m00"])
+                if np.sqrt((sx_l-tx)**2 + (sy_l-ty)**2) < 30: fx, fy = sx_l, sy_l
             
-            min_d, best = float('inf'), 'White'
+            roi_raw = warped[max(0,fy-8):min(300,fy+8), max(0,fx-8):min(300,fx+8)]
+            if roi_raw.size > 0:
+                h_r, w_r = roi_raw.shape[:2]
+                roi_eroded = roi_raw[h_r//4 : h_r - h_r//4, w_r//4 : w_r - w_r//4]
+                bgr = np.median(roi_eroded, axis=(0,1)).astype(np.uint8)
+            else: bgr = [0,0,0]
+            
+            lab = cv2.cvtColor(np.uint8([[[bgr[0],bgr[1],bgr[2]]]]), cv2.COLOR_BGR2LAB)[0][0]
+            min_d, best_c = 999.0, 'White'
             for name, (hs,ss,vs) in std_colors.items():
-                sl = cv2.cvtColor(cv2.cvtColor(np.uint8([[[hs,ss,vs]]]), cv2.COLOR_HSV2BGR), cv2.COLOR_BGR2LAB)[0][0]
-                d = np.sqrt(0.5*(int(lab[0])-int(sl[0]))**2 + 1.25*(int(lab[1])-int(sl[1]))**2 + (int(lab[2])-int(sl[2]))**2)
-                if d < min_d: min_d, best = d, name
-            detected[r*3+c] = best
-            cv2.circle(debug_warped, (cx, cy), 15, (255, 255, 255), 2)
-            cv2.putText(debug_warped, best, (cx-30, cy+35), 0, 0.5, (255,255,255), 1)
+                target_lab = cv2.cvtColor(cv2.cvtColor(np.uint8([[[hs,ss,vs]]]), cv2.COLOR_HSV2BGR), cv2.COLOR_BGR2LAB)[0][0]
+                dV = np.sqrt(0.1*(float(lab[0])-target_lab[0])**2 + 2.4*(float(lab[1])-target_lab[1])**2 + 2.4*(float(lab[2])-target_lab[2])**2)
+                if dV < min_d: min_d, best_c = dV, name
+            detected[r*3+c] = best_c
+            cv2.circle(debug_warped, (fx, fy), 12, (255,255,255), 2)
+            cv2.putText(debug_warped, best_c[0], (fx-5, fy+5), 0, 0.4, (255,255,255), 2)
 
     detected[4] = expected_center
     return detected, debug_warped, True
@@ -498,74 +509,44 @@ if app_mode == "📸 Scan & Solve":
             if st.session_state.processed_photos.get(curr) != key:
                 if hasattr(act, 'seek'): act.seek(0)
                 
-                # BRANCH: Auto-Detect vs Manual Alignment
-                msg_success = "✨ **I flattened the cube face!** Check the orientation and colors."
-                msg_fail = "❌ Cube not found. Try to hold it flatter, or switch to Manual Mode."
+                # --- 🚀 SCAN & PROCESS LOGIC ---
+                success = False
+                info = "Initializing..."
+                metrics, trace = [], []
+                bright, sharp = 100, 100 
                 
                 if st.session_state.auto_detect:
+                    # AI Auto-Searching mode
                     res = auto_detect_cube_face(act, CENTER_COLORS[curr], show_diag=st.session_state.get('show_diag'))
-                    # Unpack 9 values: d, db, info, diags, track, metrics, trace, bright, sharp
                     if len(res) == 9:
                         d, db, info, diags, track, metrics, trace, bright, sharp = res
-                    else:
-                        d, db, info, diags, track, metrics, trace, bright, sharp = None, None, "API Error", {}, None, None, ["Error: Index mismatch"], 0, 0
-                    
-                    success = (d is not None)
-                    
-                    if success:
-                        st.session_state.cube_state[curr] = d
-                        t_col, r_col = st.columns([1, 1])
-                        with t_col: st.image(track, caption="🎯 Target Locked", use_container_width=True)
-                        with r_col: st.image(db, caption="📸 Color Result", use_container_width=True)
-                        
-                        # --- 🚦 QUALITY BADGES (PROFEEDBACK) ---
-                        # Extract metrics from trace or results
-                        q1, q2 = st.columns(2)
-                        with q1:
-                            b_status = "🌕 Good" if bright > 75 else ("🌑 Too Dark" if bright < 50 else "🌥️ Low Light")
-                            st.write(f"**Brightness:** {bright:.0f} {b_status}")
-                        with q2:
-                            s_status = "✅ Sharp" if sharp > 40 else "🌫️ Blurry"
-                            st.write(f"**Sharpness:** {sharp:.0f} {s_status}")
-                        
-                        st.success(msg_success)
-                        
-                        if st.session_state.get('show_diag'):
-                            # HUD 1: Process Trace
-                            if trace:
-                                with st.expander("📝 View Process Trace Log", expanded=True):
-                                    st.code("\n".join([f"> {l}" for l in trace]), language="markdown")
-                            
-                            # HUD 2: Detailed Metrics Table
-                            if metrics:
-                                with st.expander("🔬 View Detailed Color Metrics", expanded=False):
-                                    df_data = []
-                                    for m in metrics:
-                                        row = {"Slot": m['slot']+1, "Color": m['final_color'], "Conf%": m['confidence']}
-                                        for c_name, dist in m['distances'].items(): row[f"d({c_name[0]})"] = dist
-                                        df_data.append(row)
-                                    st.table(df_data)
-                    else:
-                        st.error(f"❌ Cube not found. (Diag: {info})")
-                        if st.session_state.get('show_diag'):
-                            if trace: st.warning("\n".join(trace))
-                        
-                    # Show all diagnostics images (Feature Map, Candidates, Edges, etc)
-                    if st.session_state.get('show_diag') and diags:
-                        st.info("🖼️ **Diagnostic Intermediate Steps**")
-                        n_diags = len(diags)
-                        dcols = st.columns(n_diags)
-                        for i, (name, img) in enumerate(diags.items()):
-                            with dcols[i]: st.image(img, caption=name, use_container_width=True)
+                        success = (d is not None)
+                    else: 
+                        success = False
+                        info = "Detection Logic Error"
                 else:
-                    d, db, success = run_manual_grid_extract(act, CENTER_COLORS[curr], st.session_state.cube_size)
-                    info = "Manual"
-                    msg_success = "📐 **Manual Alignment Used.**"
-                    if success:
-                        st.session_state.cube_state[curr] = d
-                        st.image(db, caption="📸 Capture Preview", use_container_width=True)
-                        st.success(msg_success)
-                    msg_fail = "❌ Failed to read manual grid. Check your connection."
+                    # Fixed Grid Alignment Mode (PREDICTABLE)
+                    d, db, ok = run_manual_grid_extract(act, CENTER_COLORS[curr], st.session_state.cube_size)
+                    success = ok
+                    info = "Fixed Alignment Scan"
+                    track = None # No AR overlay needed for fixed mode
+                    trace = ["Fixed Alignment Active"]
+                
+                if success:
+                    st.session_state.cube_state[curr] = d
+                    t_col, r_col = st.columns([1, 1])
+                    with t_col: 
+                        if track is not None: st.image(track, caption="🎯 Target Locked")
+                        else: st.image(act, caption="📸 Source Image")
+                    with r_col: st.image(db, caption="📸 Result Grid")
+                    
+                    st.success("✨ **Colors captured!** Please verify them below.")
+                    if st.session_state.get('show_diag'):
+                        with st.expander("🛠️ Vision Metadata"):
+                            st.write(f"Brightness: {bright:.1f}, Sharpness: {sharp:.1f}")
+                            if trace: st.code("\n".join(trace))
+                else:
+                    st.error(f"❌ Scan failed: {info}")
 
                 if success:
                     col_b1, col_b2 = st.columns(2)
@@ -581,7 +562,6 @@ if app_mode == "📸 Scan & Solve":
                         if st.button("🔄 Retake", use_container_width=True, key=f"ign_{key}"):
                             st.session_state.uploader_key_version += 1; st.rerun()
                 else:
-                    st.error(msg_fail)
                     if hasattr(act, 'seek'): act.seek(0)
                     st.image(act, use_container_width=True)
                     if not st.session_state.auto_detect:
