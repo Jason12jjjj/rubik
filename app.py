@@ -1,5 +1,5 @@
 # ==============================================================================
-# RUBIK'S CUBE SOLVER (COMPLETE & STABLE VERSION)
+# RUBIK'S CUBE SOLVER (ULTIMATE STABLE VERSION)
 # ==============================================================================
 import io
 import os
@@ -114,7 +114,6 @@ def auto_detect_cube_region(img):
     k_size = max(5, int(min(w_img, h_img) * 0.015))
     k_size = k_size if k_size % 2 != 0 else k_size + 1 
 
-    # 🌟 預設錯誤訊息
     fail_reason = "Background is too messy or lighting is too dark. AI couldn't find any square shapes."
 
     def score_contours(cnts):
@@ -122,7 +121,6 @@ def auto_detect_cube_region(img):
         best = None
         best_score = 0
         
-        # 🌟 從畫面中最大的物件開始檢查，這樣 AI 的抱怨才會準確
         cnts = sorted(cnts, key=cv2.contourArea, reverse=True)
         
         for cnt in cnts:
@@ -183,7 +181,6 @@ def auto_detect_cube_region(img):
     
     best_region = score_contours(cnts_edge)
     if best_region is not None:
-        # 🌟 成功時回傳座標與成功訊息
         return best_region, "Success"
 
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
@@ -193,8 +190,8 @@ def auto_detect_cube_region(img):
     cnts, _ = cv2.findContours(clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     best_region_2 = score_contours(cnts)
-    # 🌟 失敗時回傳 None 與診斷訊息！
     return best_region_2, fail_reason
+
 
 def get_calibrated_colors():
     std_colors = {
@@ -261,12 +258,10 @@ def extract_colors_from_image(image_bytes, expected_center):
     fail_msg = "Unknown Error"
     
     if st.session_state.get('auto_detect', True):
-        # 🌟 接收 AI 傳來的座標與失敗原因
         region, fail_msg = auto_detect_cube_region(img)
 
     if region is None:
         if st.session_state.get('auto_detect', True):
-            # 🌟 如果失敗，我們把 fail_msg 放在第二個位子傳遞給網頁 UI
             return None, fail_msg, "not_detected"
         else:
             grid_scale = st.session_state.get('cube_size', 50)
@@ -389,6 +384,13 @@ with st.sidebar:
     app_mode = st.radio("Choose Mode:", ["📸 Scan & Solve", "⚙️ Tune Colors"])
     st.divider()
 
+    st.markdown("## ⚙️ Advanced Settings")
+    st.session_state.auto_detect = st.checkbox("✨ Auto-Detect Cube", value=st.session_state.get('auto_detect', True))
+    
+    if not st.session_state.auto_detect:
+        st.session_state.cube_size = st.slider("📏 Grid Size (%)", 20, 90, st.session_state.get('cube_size', 50))
+    st.divider()
+
     if app_mode == "📸 Scan & Solve":
         active = st.session_state.get('face_selector', FACES[0])
         st.markdown("## 🗺️ Live Cube Map")
@@ -399,6 +401,7 @@ with st.sidebar:
         scanned = len(st.session_state.processed_photos)
         st.caption(f"{scanned}/6 faces scanned. Switch to Scan & Solve to see the map.")
 
+    st.divider()
     if st.button("🗑️ Clear All Shared Photos", use_container_width=True):
         st.session_state.shared_face_images = {}
         st.rerun()
@@ -444,7 +447,6 @@ if app_mode == "📸 Scan & Solve":
         </div>
         """
 
-    # 🌟 FIX #4: Read from the proxy variable BEFORE rendering the radio widget
     if 'force_next_face' in st.session_state:
         st.session_state.face_selector = st.session_state.force_next_face
         del st.session_state.force_next_face
@@ -491,7 +493,7 @@ if app_mode == "📸 Scan & Solve":
             cache_key = (f"{current_face}_shared" if is_shared
                          else f"{current_face}_{getattr(active_buffer, 'file_id', id(active_buffer))}")
 
-           if st.session_state.processed_photos.get(current_face) != cache_key:
+            if st.session_state.processed_photos.get(current_face) != cache_key:
                 if hasattr(active_buffer, 'seek'):
                     active_buffer.seek(0)
                 detected, debug_img, method = extract_colors_from_image(active_buffer, CENTER_COLORS[current_face])
@@ -499,7 +501,6 @@ if app_mode == "📸 Scan & Solve":
                 if detected is None:
                     st.error(f"❌ **Auto-Detect Failed:** {debug_img}")
                     st.info("💡 **Quick Fix:** Click the `>` icon top-left to open the Sidebar, and turn **OFF** `Auto-Detect Cube`. This gives you a manual grid that ignores all background mess!")
-                    
                     if current_face in st.session_state.processed_photos:
                         del st.session_state.processed_photos[current_face]
                     st.stop()
@@ -511,8 +512,8 @@ if app_mode == "📸 Scan & Solve":
                     st.stop()
 
                 detected[4] = CENTER_COLORS[current_face]
-
                 st.session_state.cube_state[current_face] = detected
+
                 for i in range(9):
                     btn_key = f"sel_{current_face}_{i}"
                     if btn_key in st.session_state:
@@ -526,7 +527,6 @@ if app_mode == "📸 Scan & Solve":
                 st.session_state.scan_success_msg = f"🎉 **{current_face} Face** scanned successfully."
                 unscanned = [f for f in FACES if f not in st.session_state.processed_photos]
                 if unscanned:
-                    # Use proxy variable to schedule the UI change for the next run
                     st.session_state.force_next_face = unscanned[0]
                     st.session_state.uploader_key_version += 1
                     st.session_state.scan_success_msg += f" Auto-advanced to **{unscanned[0]} Face**."
@@ -539,7 +539,6 @@ if app_mode == "📸 Scan & Solve":
         if f"debug_{current_face}" in st.session_state:
             method_tag = st.session_state.get(f"method_{current_face}", "manual")
             caption = ("✅ Auto-detected cube region!" if method_tag == "auto" else "Manual grid used.")
-            # 🌟 FIX #1: Width limit for debug image
             st.image(st.session_state[f"debug_{current_face}"], caption=caption, width=400)
 
     with col_manual:
@@ -689,7 +688,6 @@ elif app_mode == "⚙️ Tune Colors":
         h_img, w_img = img.shape[:2]
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
-        # 🌟 FIX #2: Width limit for the clickable image
         value = streamlit_image_coordinates(
             img_rgb,
             key=f"calib_click_{calib_color}_{cv_ver}",
@@ -720,7 +718,6 @@ elif app_mode == "⚙️ Tune Colors":
         st.write("#### 📊 Captured Sample")
         c1, c2 = st.columns([1, 1])
         with c1:
-            # 🌟 FIX #3: Width limit for the debug output image
             st.image(debug_img_rgb, caption="Selected Position", width=250)
         with c2:
             sample_hex = '#{:02x}{:02x}{:02x}'.format(int(avg_r), int(avg_g), int(avg_b))
