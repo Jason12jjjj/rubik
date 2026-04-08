@@ -132,16 +132,29 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
 
     total_area = work_h * work_w
     if len(stks) >= 4:
+        # Pass 1 Upgrade: Use Convex Hull + Poly Approximation for a much tighter perspective-aware fit
         combined = np.vstack(stks)
-        (cx, cy), (w, h), angle = cv2.minAreaRect(combined)
-        box_area = w * h
-        area_pct = (box_area / total_area) * 100
-        pass_info = f"Pass 1: Found {len(stks)} stickers. Area={area_pct:.1f}%"
-        if (total_area * 0.10 < box_area < total_area * 0.60):
-            theta = angle * np.pi / 180.0
-            cos_t, sin_t = np.cos(theta), np.sin(theta)
-            pts_rect = np.array([[-w/2, -h/2], [w/2, -h/2], [w/2, h/2], [-w/2, h/2]])
-            best_cnt = np.array([[cx + p[0]*cos_t - p[1]*sin_t, cy + p[0]*sin_t + p[1]*cos_t] for p in pts_rect]).astype(np.int32)
+        hull = cv2.convexHull(combined)
+        peri = cv2.arcLength(hull, True)
+        appp = cv2.approxPolyDP(hull, 0.04 * peri, True)
+        
+        if len(appp) == 4:
+            area = cv2.contourArea(appp)
+            area_pct = (area / total_area) * 100
+            pass_info = f"Pass 1: Found {len(stks)} stickers. Area={area_pct:.1f}%"
+            
+            if (total_area * 0.05 < area < total_area * 0.70):
+                best_cnt = appp.reshape(4, 2)
+        else:
+            # If hull approximation is complex, use minAreaRect as a robust fallback
+            (cx, cy), (w, h), angle = cv2.minAreaRect(combined)
+            area = w * h
+            if (total_area * 0.05 < area < total_area * 0.70):
+                theta = angle * np.pi / 180.0
+                cos_t, sin_t = np.cos(theta), np.sin(theta)
+                pts_rect = np.array([[-w/2, -h/2], [w/2, -h/2], [w/2, h/2], [-w/2, h/2]])
+                best_cnt = np.array([[cx + p[0]*cos_t - p[1]*sin_t, cy + p[0]*sin_t + p[1]*cos_t] for p in pts_rect]).astype(np.int32)
+                pass_info = f"Pass 1: Rect Fallback. Area={ (area/total_area)*100:.1f}%"
 
     # Pass 2: Outline Extraction
     if best_cnt is None:
@@ -151,9 +164,10 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
         max_a = 0
         for cnt in cnts:
             x, y, wc, hc = cv2.boundingRect(cnt)
-            if x < 15 or y < 15 or (x+wc) > (work_w-15) or (y+hc) > (work_h-15): continue
+            if x < 8 or y < 8 or (x+wc) > (work_w-8) or (y+hc) > (work_h-8): 
+                pass_info = "Pass 2: Rejected (Too close to border)"; continue
             area = cv2.contourArea(cnt)
-            if (total_area * 0.05) < area < (total_area * 0.45):
+            if (total_area * 0.02) < area < (total_area * 0.75):
                 hull = cv2.convexHull(cnt)
                 appr = cv2.approxPolyDP(hull, 0.05 * cv2.arcLength(hull, True), True)
                 if len(appr) == 4:
@@ -187,14 +201,17 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
     for r in range(3):
         for c in range(3):
             cx, cy = int((c+0.5)*100), int((r+0.5)*100)
-            roi = warped[cy-12:cy+12, cx-12:cx+12]
+            # Larger ROI (40x40) to be more robust to alignment jitter
+            roi = warped[cy-20:cy+20, cx-20:cx+20]
             if roi.size == 0: continue
             bgr_avg = np.median(roi, axis=(0,1)).astype(np.uint8)
             lab = cv2.cvtColor(np.uint8([[[bgr_avg[0], bgr_avg[1], bgr_avg[2]]]]), cv2.COLOR_BGR2LAB)[0][0]
             min_d, best_c = float('inf'), 'White'
             for name, (hs, ss, vs) in std_colors.items():
                 sl = cv2.cvtColor(cv2.cvtColor(np.uint8([[[hs,ss,vs]]]), cv2.COLOR_HSV2BGR), cv2.COLOR_BGR2LAB)[0][0]
-                d = np.sqrt(0.3*(float(lab[0])-float(sl[0]))**2 + 1.5*(float(lab[1])-float(sl[1]))**2 + 1.5*(float(lab[2])-float(sl[2]))**2)
+                # Further de-weight Lightness (L=0.2) to fight glare
+                dL, da, db = float(lab[0])-float(sl[0]), float(lab[1])-float(sl[1]), float(lab[2])-float(sl[2])
+                d = np.sqrt(0.2*(dL**2) + 1.5*(da**2) + 1.5*(db**2))
                 if d < min_d: min_d, best_c = d, name
             detected[r*3+c] = best_c
             short = f"{COLOR_EMOJIS[best_c][0]}{best_c[0]}"
@@ -205,10 +222,10 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
     # AR Overlay: Project grid back to the WORK image (650px high)
     draw_map = {'White': (255,255,255), 'Yellow': (0,255,255), 'Orange': (0,165,255), 'Red': (0,0,255), 'Green': (0,255,0), 'Blue': (255,0,0)}
     
-    # 🌟 Precision Refinement: Contract the area by 10% to hit stickers, not edges
+    # 🌟 Subtle Inward Contraction (5%) to target sticker centers
     raw_pts = best_cnt.reshape(4, 2).astype("float32")
     center_p = np.mean(raw_pts, axis=0)
-    contracted_pts = center_p + 0.90 * (raw_pts - center_p)
+    contracted_pts = center_p + 0.95 * (raw_pts - center_p)
     
     # Sort for M_inv
     s = contracted_pts.sum(axis=1)
@@ -224,12 +241,15 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
             pts_c = np.array([[[int((c+0.5)*100), int((r+0.5)*100)]]], dtype="float32")
             pts_orig = np.int32(cv2.perspectiveTransform(pts_c, M_inv))
             
-            # Draw a small SOLID circle at the sample point
+            # Draw small SOLID circle and a tiny text label (e.g. R, G) for diagnostics
             c_name = detected[r*3+c]
             bgr = draw_map.get(c_name, (0, 255, 0))
-            cv2.circle(tracking_img, (pts_orig[0][0][0], pts_orig[0][0][1]), 4, bgr, -1)
-            # Add a thin white border for visibility
-            cv2.circle(tracking_img, (pts_orig[0][0][0], pts_orig[0][0][1]), 5, (255,255,255), 1)
+            px, py = pts_orig[0][0][0], pts_orig[0][0][1]
+            cv2.circle(tracking_img, (px, py), 4, bgr, -1)
+            cv2.circle(tracking_img, (px, py), 5, (255,255,255), 1)
+            # Tiny label next to dot
+            cv2.putText(tracking_img, c_name[0], (px+8, py+8), 0, 0.35, (0,0,0), 2, cv2.LINE_AA)
+            cv2.putText(tracking_img, c_name[0], (px+8, py+8), 0, 0.35, (255,255,255), 1, cv2.LINE_AA)
 
     detected[4] = expected_center
     return detected, debug_warped, pass_info, diag_imgs, cv2.cvtColor(tracking_img, cv2.COLOR_BGR2RGB)
