@@ -187,7 +187,7 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
                     ratio = min(bw, bh) / max(bw, bh) if max(bw, bh) > 0 else 0
                     pass_info = f"Pass 2: Area={area_pct:.1f}%, Ratio={ratio:.2f}"
                     
-                    if area > max_area and ratio > 0.7:  
+                    if area > max_area and ratio > 0.5:  
                         max_area = area
                         best_cnt = appr.reshape(4, 2)
 
