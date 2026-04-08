@@ -100,37 +100,49 @@ st.markdown("""
         top: 130px; 
         width: 260px;
         height: 260px;
-        border: 3px solid #00e5ff; /* Cyan Solid for better visibility */
-        border-radius: 8px;
+        border: 1px solid rgba(0, 229, 255, 0.5); /* Thin boundary */
+        border-radius: 4px;
         pointer-events: none;
         z-index: 10;
         box-shadow: 0 0 0 1000px rgba(0, 0, 0, 0.4);
-        
-        /* Inner 3x3 Grid Silhouette */
         background-image: 
             linear-gradient(to right, rgba(0, 229, 255, 0.3) 1px, transparent 1px),
             linear-gradient(to bottom, rgba(0, 229, 255, 0.3) 1px, transparent 1px);
-        background-size: 86.6px 86.6px; /* 260/3 */
-        
-        animation: pulse 2s infinite;
+        background-size: 86.6px 86.6px;
     }
-    @keyframes pulse {
-        0% { border-color: rgba(0, 229, 255, 1); box-shadow: 0 0 0 1000px rgba(0, 0, 0, 0.4), 0 0 10px rgba(0, 229, 255, 0.2); }
-        50% { border-color: rgba(0, 229, 255, 0.5); box-shadow: 0 0 0 1000px rgba(0, 0, 0, 0.5), 0 0 20px rgba(0, 229, 255, 0.5); }
-        100% { border-color: rgba(0, 229, 255, 1); box-shadow: 0 0 0 1000px rgba(0, 0, 0, 0.4), 0 0 10px rgba(0, 229, 255, 0.2); }
-    }
+    
+    /* Corner Brackets for 'Locked' look */
     .camera-guide::before {
-        content: "PLACE CUBE FACE HERE";
+        content: "";
         position: absolute;
-        top: -35px;
-        left: 0;
+        top: -4px; left: -4px; width: 40px; height: 40px;
+        border-top: 4px solid #00e5ff; border-left: 4px solid #00e5ff;
+    }
+    .camera-corner-tr {
+        position: absolute; top: -4px; right: -4px; width: 40px; height: 40px;
+        border-top: 4px solid #00e5ff; border-right: 4px solid #00e5ff;
+    }
+    .camera-corner-bl {
+        position: absolute; bottom: -4px; left: -4px; width: 40px; height: 40px;
+        border-bottom: 4px solid #00e5ff; border-left: 4px solid #00e5ff;
+    }
+    .camera-corner-br {
+        position: absolute; bottom: -4px; right: -4px; width: 40px; height: 40px;
+        border-bottom: 4px solid #00e5ff; border-right: 4px solid #00e5ff;
+    }
+
+    /* Orientation Labels */
+    .orientation-label {
+        position: absolute;
         width: 100%;
         text-align: center;
         color: #00e5ff;
         font-weight: bold;
-        font-size: 16px;
         text-shadow: 0 0 8px rgba(0,0,0,1);
     }
+    .label-up { top: -45px; font-size: 16px; }
+    .label-hint { top: -20px; font-size: 11px; opacity: 0.8; }
+    
     /* Sample indicators */
     .camera-guide::after {
         content: "";
@@ -139,6 +151,11 @@ st.markdown("""
         background-image: radial-gradient(rgba(0, 229, 255, 0.4) 2px, transparent 2px);
         background-size: 86.6px 86.6px;
         background-position: 43.3px 43.3px;
+        animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+        0%, 100% { opacity: 0.4; }
+        50% { opacity: 0.9; }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -471,6 +488,20 @@ with st.sidebar:
         st.markdown("### 🗺️ Interactive Map")
         st.caption("Click a face below to jump to its scanner.")
         st.markdown(render_interactive_map(st.session_state.programmatic_face), unsafe_allow_html=True)
+        # --- Color Inventory HUD ---
+        st.markdown("### 📊 Color Inventory")
+        all_stks = []
+        for f in FACES: all_stks.extend(st.session_state.cube_state[f])
+        from collections import Counter
+        counts = Counter(all_stks)
+        
+        cols = st.columns(3)
+        for i, color in enumerate(AVAILABLE_COLORS):
+            cnt = counts.get(color, 0)
+            status = "✅" if cnt == 9 else ("🚨" if cnt > 9 else "⏳")
+            with cols[i % 3]:
+                st.markdown(f"**{COLOR_EMOJIS[color]}**  \n`{cnt}/9` {status}")
+        
         st.divider()
         with st.expander("🛠️ Advanced Tools"):
             st.session_state.show_diag = st.toggle("🔍 Diagnostic Vision", value=st.session_state.get('show_diag', False))
@@ -519,7 +550,16 @@ if app_mode == "📸 Scan & Solve":
         if imth == "📹 Live":
             st.markdown('<div class="camera-container">', unsafe_allow_html=True)
             if st.session_state.show_guide:
-                st.markdown('<div class="camera-guide"></div>', unsafe_allow_html=True)
+                up_face = ORIENTATION_GUIDE[curr].split("**")[3] if "**" in ORIENTATION_GUIDE[curr] else "N/A"
+                st.markdown(f"""
+                <div class="camera-guide">
+                    <div class="camera-corner-tr"></div>
+                    <div class="camera-corner-bl"></div>
+                    <div class="camera-corner-br"></div>
+                    <div class="orientation-label label-up">PLACE {curr.upper()} FACE HERE</div>
+                    <div class="orientation-label label-hint">▲ Adjacent Face: {up_face}</div>
+                </div>
+                """, unsafe_allow_html=True)
             buf = st.camera_input("P", key=f"c_{v}", label_visibility="collapsed")
             st.markdown('</div>', unsafe_allow_html=True)
         else:
