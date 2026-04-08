@@ -6,55 +6,63 @@ from rubiks_core import validate_cube_state, solve_cube
 # --- 1. SYSTEM CONFIG ---
 st.set_page_config(page_title="Pro Rubik's Solver", page_icon="🧊", layout="wide")
 
-# Custom CSS for Premium Glassmorphism Look
+# Custom CSS for Eye-Comfort Premium Look
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap');
     
     html, body, [data-testid="stAppViewContainer"] {
         font-family: 'Outfit', sans-serif;
-        background: radial-gradient(circle at top right, #0a192f, #020c1b);
-        color: #e6f1ff;
+        /* Eye-Comfort Background: Deep Slate */
+        background: #0f172a;
+        color: #94a3b8;
     }
 
-    /* Glass Panels */
+    /* Glass Panels - Softer Contrast */
     .glass-panel {
-        background: rgba(255, 255, 255, 0.03);
-        backdrop-filter: blur(12px);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 16px;
+        background: rgba(30, 41, 59, 0.7);
+        backdrop-filter: blur(8px);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        border-radius: 12px;
         padding: 24px;
         margin-bottom: 20px;
     }
 
-    /* Button Styling & Animations */
+    /* Button Styling - Reduced Glare */
     .stButton > button {
-        border-radius: 10px !important;
-        border: 1px solid rgba(0, 229, 255, 0.3) !important;
-        background: rgba(0, 229, 255, 0.05) !important;
-        transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) !important;
+        border-radius: 8px !important;
+        border: 1px solid rgba(148, 163, 184, 0.2) !important;
+        background: rgba(30, 41, 59, 0.5) !important;
+        color: #f1f5f9 !important;
+        transition: all 0.2s ease !important;
     }
     
     .stButton > button:hover {
-        transform: translateY(-3px);
-        box-shadow: 0 8px 15px rgba(0, 229, 255, 0.2) !important;
-        border-color: #00e5ff !important;
-        background: rgba(0, 229, 255, 0.15) !important;
+        border-color: #38bdf8 !important;
+        background: rgba(56, 189, 248, 0.1) !important;
+        color: #38bdf8 !important;
     }
 
-    /* Palette Selection Indicator */
+    /* Selection Indicator - Controlled Contrast */
     .stButton > button[aria-pressed="true"] {
-        border: 2px solid #00e5ff !important;
-        box-shadow: 0 0 20px rgba(0, 229, 255, 0.4) !important;
+        border: 2px solid #38bdf8 !important;
+        background: rgba(56, 189, 248, 0.15) !important;
+    }
+    
+    h1, h2, h3, h4 {
+        color: #f1f5f9 !important;
+        font-weight: 600 !important;
     }
 
     .inventory-card {
-        background: rgba(255, 255, 255, 0.05);
-        border-radius: 8px;
-        padding: 8px;
+        background: rgba(15, 23, 42, 0.6);
+        border-radius: 10px;
+        padding: 10px;
         text-align: center;
-        border: 1px solid rgba(255,255,255,0.05);
+        border: 1px solid rgba(148, 163, 184, 0.1);
     }
+    
+    .inventory-err { color: #f87171 !important; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
