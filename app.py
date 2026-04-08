@@ -439,7 +439,11 @@ elif app_mode == "⚙️ Tune Colors":
     st.title("⚙️ Color Calibration")
     c_cal = st.radio("Target:", AVAILABLE_COLORS, horizontal=True, format_func=lambda x: f"{COLOR_EMOJIS[x]} {x}")
     v = st.session_state.uploader_key_version
-    cal_buf = st.camera_input("Sample", key=f"cal_{v}") or st.file_uploader("Upload", type=['jpg','png'], key=f"ulc_{v}")
+    cal_meth = st.radio("Method:", ["📹 Live", "📂 Upload"], horizontal=True, label_visibility="collapsed", key="cal_meth")
+    if cal_meth == "📹 Live":
+        cal_buf = st.camera_input("Sample", key=f"cal_{v}")
+    else:
+        cal_buf = st.file_uploader("Upload Image", type=['jpg','png'], key=f"ulc_{v}")
     if cal_buf:
         img_cal = cv2.imdecode(np.asarray(bytearray(cal_buf.read()), dtype=np.uint8), 1)
         if img_cal is not None:
