@@ -192,65 +192,96 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
     rect[1], rect[3] = pts_padded[np.argmin(diff)], pts_padded[np.argmax(diff)]
     dst = np.array([[0,0], [299,0], [299,299], [0,299]], dtype="float32")
     
-    # Warp & Detect Colors
+    # Warp & Detect (Deep Refinement Stage)
     M = cv2.getPerspectiveTransform(rect, dst)
     warped = cv2.warpPerspective(img_padded, M, (300, 300))
     debug_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB)
     
+    # 🌟 Deep Alignment: Refine sampling points using Saturation Centroids
     std_colors = get_calibrated_colors()
     detected = ['White'] * 9
+    refined_pts_warped = [] # Store for AR later
+    
+    hsv_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)
+    sat_map = hsv_warped[:,:,1]
+    
     for r in range(3):
         for c in range(3):
-            cx, cy = int((c+0.5)*100), int((r+0.5)*100)
-            # Larger ROI (40x40) to be more robust to alignment jitter
-            roi = warped[cy-20:cy+20, cx-20:cx+20]
+            # Target center in 300x300 warped space
+            target_cx, target_cy = int((c+0.5)*100), int((r+0.5)*100)
+            
+            # --- LOCAL SNAP (Refinement) ---
+            # Search in a local window (e.g., 60x60 around predicted center)
+            win = 30
+            y1, y2 = max(0, target_cy-win), min(300, target_cy+win)
+            x1, x2 = max(0, target_cx-win), min(300, target_cx+win)
+            roi_sat = sat_map[y1:y2, x1:x2]
+            
+            # Use Saturation Moments to find the "Center of Color Mass"
+            moments = cv2.moments(roi_sat)
+            if moments["m00"] > 100: # Ensure there's some color mass
+                snap_x = x1 + int(moments["m10"] / moments["m00"])
+                snap_y = y1 + int(moments["m01"] / moments["m00"])
+                # Constrain movement to 25px from predicted center to prevent cross-bleeding
+                dist = np.sqrt((snap_x - target_cx)**2 + (snap_y - target_cy)**2)
+                if dist < 25:
+                    final_cx, final_cy = snap_x, snap_y
+                else: 
+                    # If snap moved too far, move only partially towards it
+                    angle = np.arctan2(snap_y - target_cy, snap_x - target_cx)
+                    final_cx = target_cx + int(20 * np.cos(angle))
+                    final_cy = target_cy + int(20 * np.sin(angle))
+            else:
+                final_cx, final_cy = target_cx, target_cy
+            
+            refined_pts_warped.append((final_cx, final_cy))
+            
+            # Sample color at REFINED coordinate
+            roi = warped[final_cy-18:final_cy+18, final_cx-18:final_cx+18]
             if roi.size == 0: continue
             bgr_avg = np.median(roi, axis=(0,1)).astype(np.uint8)
             lab = cv2.cvtColor(np.uint8([[[bgr_avg[0], bgr_avg[1], bgr_avg[2]]]]), cv2.COLOR_BGR2LAB)[0][0]
+            
             min_d, best_c = float('inf'), 'White'
             for name, (hs, ss, vs) in std_colors.items():
                 sl = cv2.cvtColor(cv2.cvtColor(np.uint8([[[hs,ss,vs]]]), cv2.COLOR_HSV2BGR), cv2.COLOR_BGR2LAB)[0][0]
-                # Further de-weight Lightness (L=0.2) to fight glare
                 dL, da, db = float(lab[0])-float(sl[0]), float(lab[1])-float(sl[1]), float(lab[2])-float(sl[2])
                 d = np.sqrt(0.2*(dL**2) + 1.5*(da**2) + 1.5*(db**2))
                 if d < min_d: min_d, best_c = d, name
+            
             detected[r*3+c] = best_c
             short = f"{COLOR_EMOJIS[best_c][0]}{best_c[0]}"
-            cv2.circle(debug_warped, (cx, cy), 15, (255,255,255), 2)
-            cv2.putText(debug_warped, short, (cx-20, cy+40), 0, 0.45, (0,0,0), 2, cv2.LINE_AA)
-            cv2.putText(debug_warped, short, (cx-20, cy+40), 0, 0.45, (255,255,255), 1, cv2.LINE_AA)
+            cv2.circle(debug_warped, (final_cx, final_cy), 15, (255,255,255), 2)
+            cv2.putText(debug_warped, short, (final_cx-20, final_cy+40), 0, 0.45, (0,0,0), 2, cv2.LINE_AA)
+            cv2.putText(debug_warped, short, (final_cx-20, final_cy+40), 0, 0.45, (255,255,255), 1, cv2.LINE_AA)
 
-    # AR Overlay: Project grid back to the WORK image (650px high)
+    # AR Overlay: Project refined centers back to the original photo
     draw_map = {'White': (255,255,255), 'Yellow': (0,255,255), 'Orange': (0,165,255), 'Red': (0,0,255), 'Green': (0,255,0), 'Blue': (255,0,0)}
     
-    # 🌟 Subtle Inward Contraction (5%) to target sticker centers
-    raw_pts = best_cnt.reshape(4, 2).astype("float32")
-    center_p = np.mean(raw_pts, axis=0)
-    contracted_pts = center_p + 0.95 * (raw_pts - center_p)
-    
-    # Sort for M_inv
-    s = contracted_pts.sum(axis=1)
-    diff = np.diff(contracted_pts, axis=1)
+    # Sort best_cnt for M_inv (must match dst order)
+    pts_w = best_cnt.reshape(4, 2).astype("float32")
+    s = pts_w.sum(axis=1)
+    diff = np.diff(pts_w, axis=1)
     rect_w = np.zeros((4, 2), dtype="float32")
-    rect_w[0], rect_w[2] = contracted_pts[np.argmin(s)], contracted_pts[np.argmax(s)]
-    rect_w[1], rect_w[3] = contracted_pts[np.argmin(diff)], contracted_pts[np.argmax(diff)]
+    rect_w[0], rect_w[2] = pts_w[np.argmin(s)], pts_w[np.argmax(s)]
+    rect_w[1], rect_w[3] = pts_w[np.argmin(diff)], pts_w[np.argmax(diff)]
     
     M_inv = cv2.getPerspectiveTransform(dst, rect_w)
-    for r in range(3):
-        for c in range(3):
-            # Project the exact center of each cell back to the original photo
-            pts_c = np.array([[[int((c+0.5)*100), int((r+0.5)*100)]]], dtype="float32")
-            pts_orig = np.int32(cv2.perspectiveTransform(pts_c, M_inv))
-            
-            # Draw small SOLID circle and a tiny text label (e.g. R, G) for diagnostics
-            c_name = detected[r*3+c]
-            bgr = draw_map.get(c_name, (0, 255, 0))
-            px, py = pts_orig[0][0][0], pts_orig[0][0][1]
-            cv2.circle(tracking_img, (px, py), 4, bgr, -1)
-            cv2.circle(tracking_img, (px, py), 5, (255,255,255), 1)
-            # Tiny label next to dot
-            cv2.putText(tracking_img, c_name[0], (px+8, py+8), 0, 0.35, (0,0,0), 2, cv2.LINE_AA)
-            cv2.putText(tracking_img, c_name[0], (px+8, py+8), 0, 0.35, (255,255,255), 1, cv2.LINE_AA)
+    
+    for i, (fx, fy) in enumerate(refined_pts_warped):
+        # Project each refined warped point back to work_img space
+        pts_w = np.array([[[fx, fy]]], dtype="float32")
+        pts_orig = np.int32(cv2.perspectiveTransform(pts_w, M_inv))
+        
+        px, py = pts_orig[0][0][0], pts_orig[0][0][1]
+        c_name = detected[i]
+        bgr = draw_map.get(c_name, (0, 255, 0))
+        
+        # Draw refined indicators
+        cv2.circle(tracking_img, (px, py), 4, bgr, -1)
+        cv2.circle(tracking_img, (px, py), 5, (255,255,255), 1)
+        cv2.putText(tracking_img, c_name[0], (px+8, py+8), 0, 0.35, (0,0,0), 2, cv2.LINE_AA)
+        cv2.putText(tracking_img, c_name[0], (px+8, py+8), 0, 0.35, (255,255,255), 1, cv2.LINE_AA)
 
     detected[4] = expected_center
     return detected, debug_warped, pass_info, diag_imgs, cv2.cvtColor(tracking_img, cv2.COLOR_BGR2RGB)
