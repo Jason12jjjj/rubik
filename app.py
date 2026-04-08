@@ -145,13 +145,19 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
             extent = area / (w * h) if (w * h) > 0 else 0
             
             roi_mini = work_img[max(0,y):min(work_h,y+h), max(0,x):min(work_w,x+w)]
-            bgr_m = np.mean(roi_mini, axis=(0,1)) if roi_mini.size > 0 else [0,0,0]
-            is_skin = (bgr_m[2] > bgr_m[1] > bgr_m[0]) and (bgr_m[2]-bgr_m[0] > 30)
+            if roi_mini.size > 0:
+                bgr_m = np.mean(roi_mini, axis=(0,1))
+                hsv_m = cv2.cvtColor(np.uint8([[bgr_m]]), cv2.COLOR_BGR2HSV)[0][0]
+                # 🛑 BIO-GUARD: Skin is usually mid-low saturation and follows R > G > B
+                is_skin = (bgr_m[2] > bgr_m[1] > bgr_m[0]) and (hsv_m[1] < 110)
+                is_vibrant = hsv_m[1] > 110 or hsv_m[2] > 200 # White/Yellow are vibrant
+            else:
+                is_skin, is_vibrant = False, True
 
-            # INCREASED MAX AREA: Up to 0.8 of work_h for close-ups
             if (work_h*0.005)**2 < area < (work_h*0.8)**2:
-                if ratio > 0.4 and solidity > 0.7 and extent > 0.4:
-                    if not is_skin or ratio > 0.8:
+                # 🛡️ HAND-KILLER: Must be square, solid, and NOT skin-tone
+                if ratio > 0.45 and solidity > 0.75 and extent > 0.5:
+                    if (not is_skin and is_vibrant) or ratio > 0.85:
                         M = cv2.moments(c)
                         if M["m00"] > 0:
                             cx, cy = int(M["m10"]/M["m00"]), int(M["m01"]/M["m00"])
@@ -163,24 +169,22 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
                 all_raw.append({'box':(x,y,w,h), 'status': "YELLOW" if (len(found)>0 and found[-1]['cnt'] is c) else "RED"})
         return found, ra, rs
 
-    # Scan 1: Fine-grained for distant stickers
+    # Scan Phase (Multi-Scale)
     t1 = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 13, 2)
     c1, ra1, rs1 = process_contours(cv2.findContours(t1, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0])
     candidates.extend(c1); rej_area += ra1; rej_shape += rs1
     
-    # Scan 2: Large-scale for close-ups (BIG BlockSize)
-    trace.append("Scan 2: Large-window adaptive search for close-ups...")
-    t2 = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 81, 2)
-    c2, ra2, rs2 = process_contours(cv2.findContours(t2, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0], tag="SILENT")
-    # Add unique stickers from Scan 2
-    for cand2 in c2:
-        if not any(np.sqrt((cand2['center'][0]-c1c['center'][0])**2 + (cand2['center'][1]-c1c['center'][1])**2) < 10 for c1c in candidates):
-            candidates.append(cand2)
-    rej_area += ra2; rej_shape += rs2
+    if len(candidates) < 7:
+        trace.append("Scan 1 low yield. Trying Scan 2 (Broad Filter)...")
+        t2 = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 81, 2)
+        c2, ra2, rs2 = process_contours(cv2.findContours(t2, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0], tag="SILENT")
+        for cand2 in c2:
+            if not any(np.sqrt((cand2['center'][0]-c1c['center'][0])**2 + (cand2['center'][1]-c1c['center'][1])**2) < 10 for c1c in candidates):
+                candidates.append(cand2)
+        rej_area += ra2; rej_shape += rs2
 
-    # Scan 3: Global Otsu fallback if still empty
-    if len(candidates) < 4:
-        trace.append("Scan 1/2 failed. Retrying Scan 3: Global Otsu...")
+    if len(candidates) < 7:
+        trace.append("Scan 1/2 failed. Retrying Scan 3 (Global Otsu)...")
         _, t3 = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         c3, ra3, rs3 = process_contours(cv2.findContours(t3, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0], tag="SILENT")
         for cand3 in c3:
@@ -194,27 +198,41 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
     best_cluster = []
     pass_info = "Searching..."
 
-    if len(candidates) >= 4:
+    if len(candidates) >= 7: # 🔥 Increased threshold from 4 to 7
         max_score = 0
         avg_w = np.mean([np.sqrt(c['area']) for c in candidates])
-        threshold_dist = avg_w * 3.2 # Increased neighbor reach
+        threshold_dist = avg_w * 3.5
         pts = np.array([c['center'] for c in candidates])
         
         for i in range(len(candidates)):
             cluster = [candidates[i]]
+            c_pts = []
             for j in range(len(candidates)):
                 if i == j: continue
                 d = np.sqrt(np.sum((pts[i] - pts[j])**2))
-                if d < threshold_dist: cluster.append(candidates[j])
+                if d < threshold_dist: 
+                    cluster.append(candidates[j])
+                    c_pts.append(pts[j])
             
-            score = len(cluster) * np.mean([c['weight'] for c in cluster])
-            if 6 <= len(cluster) <= 10: score *= 2.0
-            if len(cluster) == 9: score += 15
+            # 📐 GEOMETRIC REGULARITY: Rubik grid is equally spaced
+            reg_score = 1.0
+            if len(c_pts) >= 4:
+                # Calculate variance of distances to nearest 3 neighbors
+                all_dists = []
+                for p_m in cluster:
+                    px, py = p_m['center']
+                    d_to_others = sorted([np.sqrt((px-o['center'][0])**2 + (py-o['center'][1])**2) for o in cluster if o is not p_m])
+                    all_dists.extend(d_to_others[:3])
+                reg_score = 1.0 / (1.0 + np.std(all_dists) / (np.mean(all_dists) + 1e-6))
+
+            # Final Score calculation
+            score = len(cluster) * np.mean([c['weight'] for c in cluster]) * reg_score
+            if 7 <= len(cluster) <= 10: score *= 3.0 # High confidence for human-held grid
             
             if score > max_score:
                 max_score, best_cluster = score, cluster
         
-        trace.append(f"Locked primary cluster: {len(best_cluster)} stickers. Score={max_score:.1f}")
+        trace.append(f"Locked cluster: {len(best_cluster)} stks (RegScore={reg_score:.2f}, FinalScore={max_score:.1f})")
         
         if len(best_cluster) >= 4:
             cluster_pts = np.array([c['center'] for c in best_cluster])
