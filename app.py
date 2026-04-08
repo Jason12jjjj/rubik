@@ -204,16 +204,19 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
     if len(candidates) >= 4:
         # Cluster logic: Growth / Connected Components
         pts = np.array([c['center'] for c in candidates])
-        avg_w = np.mean([np.sqrt(c['area']) for c in candidates])
-        threshold_dist = avg_w * 6.0 # 🔥 Increased to 6.0 for massive close-ups
-        min_dist = avg_w * 0.5
+        
+        # 📏 ROBUST SCALE: Use median to ignore tiny noise/glare
+        valid_areas = [c['area'] for c in candidates]
+        med_w = np.sqrt(np.median(valid_areas)) if valid_areas else 1.0
+        
+        threshold_dist = med_w * 6.5 # Generous for perspective
+        min_dist = med_w * 0.55 # Prevent stacking
         
         visited = [False] * len(candidates)
         all_clusters = []
         
         for i in range(len(candidates)):
             if visited[i]: continue
-            # Start a new BFS cluster
             curr_cluster = [i]
             queue = [i]
             visited[i] = True
@@ -228,33 +231,45 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
                             queue.append(v)
             all_clusters.append([candidates[idx] for idx in curr_cluster])
         
-        # Pick best cluster based on size (target 9) and regularity
         max_score = 0
         best_reg_score = 0.0
         for cluster in all_clusters:
-            # We must be aggressive: even 4 points is better than nothing
             if len(cluster) < 4: continue
             
-            # 📐 Regularity score (Grid consistency)
+            # 📐 Calculate Cluster Coverage (Physical size in image)
+            c_pts = np.array([c['center'] for c in cluster])
+            c_min_x, c_min_y = np.min(c_pts, axis=0)
+            c_max_x, c_max_y = np.max(c_pts, axis=0)
+            c_w, c_h = c_max_x - c_min_x, c_max_y - c_min_y
+            cluster_coverage = (c_w * c_h) / (work_w * work_h)
+            
+            # 🛡️ SANITY CHECK: If the whole cluster is tiny (<1% of screen), its noise.
+            if cluster_coverage < 0.01: continue
+
+            # Grid Consistency (Regularity)
             reg_score = 1.0
-            if len(cluster) >= 4:
-                all_dists = []
-                for p_m in cluster:
-                    px, py = p_m['center']
-                    # Check 2 nearest neighbors in cluster
-                    d_to_others = sorted([np.sqrt((px-o['center'][0])**2 + (py-o['center'][1])**2) for o in cluster if o is not p_m])
-                    all_dists.extend(d_to_others[:2])
+            all_dists = []
+            for p_m in cluster:
+                px, py = p_m['center']
+                d_to_others = sorted([np.sqrt((px-o['center'][0])**2 + (py-o['center'][1])**2) for o in cluster if o is not p_m])
+                if d_to_others: all_dists.extend(d_to_others[:2])
+            
+            if all_dists:
                 reg_score = 1.0 / (1.0 + np.std(all_dists) / (np.mean(all_dists) + 1e-6))
 
-            # HEAVY BIAS towards size over center-weight for close-ups
-            score = (len(cluster)**2) * reg_score 
+            # SCORING: Favor Large Clusters (Coverage) + Size (Count) + Regularity
+            # This ensures we pick the BIG CUBE over a tiny skin-texture grid
+            score = (len(cluster)**2) * reg_score * (1.0 + cluster_coverage * 10)
+            
             if 7 <= len(cluster) <= 10: score *= 5.0
+            if len(cluster) == 9: score += 50
             
             if score > max_score:
                 max_score, best_cluster = score, cluster
                 best_reg_score = reg_score
         
-        trace.append(f"Locked cluster: {len(best_cluster)} stks (RegScore={best_reg_score:.2f}, FinalScore={max_score:.1f})")
+        status_msg = f"Locked cluster: {len(best_cluster)} stks (Coverage={cluster_coverage*100:.1f}%, FinalScore={max_score:.1f})"
+        trace.append(status_msg)
         
         if len(best_cluster) >= 4:
             cluster_pts = np.array([c['center'] for c in best_cluster])
