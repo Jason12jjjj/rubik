@@ -114,55 +114,66 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
     gray = cv2.cvtColor(work_img, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     
-    # 💎 Feature Scraper
-    thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 13, 3)
-    cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    trace.append(f"Found {len(cnts)} raw contours.")
+    # 💎 Feature Scraper (Multi-Threshold Strategy)
+    trace.append("Scan 1: High-Contrast Adaptive Threshold...")
+    thresh1 = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 13, 2)
+    cnts, _ = cv2.findContours(thresh1, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     candidates = []
-    all_raw = [] # For diagnostic map
-    for c in cnts:
-        area = cv2.contourArea(c)
-        x, y, w, h = cv2.boundingRect(c)
-        ratio = min(w, h) / max(w, h) if max(w, h) > 0 else 0
-        
-        # 💎 HAND-HELD DEFENSE: Solidity & Extent checks
-        hull_area = cv2.contourArea(cv2.convexHull(c))
-        solidity = area / hull_area if hull_area > 0 else 0
-        extent = area / (w * h) if (w * h) > 0 else 0
-        
-        # Skin-tone heuristic (B < G < R pattern with bounded ratios)
-        roi_mini = work_img[max(0,y):min(work_h,y+h), max(0,x):min(work_w,x+w)]
-        bgr_mean = np.mean(roi_mini, axis=(0,1)) if roi_mini.size > 0 else [0,0,0]
-        is_skin_like = (bgr_mean[2] > bgr_mean[1] > bgr_mean[0]) and (bgr_mean[2] - bgr_mean[0] > 30)
+    all_raw = []
+    rej_area, rej_shape = 0, 0
+    
+    def process_contours(clist):
+        found = []
+        ra, rs = 0, 0
+        for c in clist:
+            area = cv2.contourArea(c)
+            x, y, w, h = cv2.boundingRect(c)
+            ratio = min(w, h) / max(w, h) if max(w, h) > 0 else 0
+            # Relaxed Hand-held Defense
+            hull = cv2.convexHull(c)
+            h_area = cv2.contourArea(hull)
+            solidity = area / h_area if h_area > 0 else 0
+            extent = area / (w * h) if (w * h) > 0 else 0
+            
+            roi_mini = work_img[max(0,y):min(work_h,y+h), max(0,x):min(work_w,x+w)]
+            bgr_mean = np.mean(roi_mini, axis=(0,1)) if roi_mini.size > 0 else [0,0,0]
+            is_skin = (bgr_mean[2] > bgr_mean[1] > bgr_mean[0]) and (bgr_mean[2] - bgr_mean[0] > 30)
 
-        status = "RED" # Default reject
-        # Relaxed area but stricter shape for handheld support
-        if (work_h*0.005)**2 < area < (work_h*0.4)**2:
-            if ratio > 0.45 and solidity > 0.85 and extent > 0.6:
-                if not is_skin_like or ratio > 0.8: # Skin-like must be very square to pass
-                    status = "YELLOW" # Potential
-                    M = cv2.moments(c)
-                    if M["m00"] > 0:
-                        cx, cy = int(M["m10"]/M["m00"]), int(M["m01"]/M["m00"])
-                        # Center-weighted score: 1.0 at center, drops off at edges
-                        dist_center = np.sqrt((cx - work_w/2)**2 + (cy - work_h/2)**2)
-                        center_weight = 1.0 / (1.0 + (dist_center/work_w))
-                        candidates.append({'cnt': c, 'center': (cx, cy), 'area': area, 'weight': center_weight})
-        
-        all_raw.append({'box': (x,y,w,h), 'status': status, 'reason': "Skin" if is_skin_like else "Shape"})
+            if (work_h*0.005)**2 < area < (work_h*0.4)**2:
+                # Relaxed thresholds: 0.7 solidity, 0.4 extent, 0.4 ratio
+                if ratio > 0.4 and solidity > 0.75 and extent > 0.45:
+                    if not is_skin or ratio > 0.8:
+                        M = cv2.moments(c)
+                        if M["m00"] > 0:
+                            cx, cy = int(M["m10"]/M["m00"]), int(M["m01"]/M["m00"])
+                            dist_c = np.sqrt((cx-work_w/2)**2 + (cy-work_h/2)**2)
+                            found.append({'cnt':c, 'center':(cx,cy), 'area':area, 'weight': 1.0/(1.0+dist_c/work_w)})
+                else: rs += 1
+            else: ra += 1
+            all_raw.append({'box':(x,y,w,h), 'status': "YELLOW" if (len(found)>0 and found[-1]['cnt'] is c) else "RED"})
+        return found, ra, rs
 
-    trace.append(f"Found {len(candidates)} high-quality cube-like squares (Filtered skin/noise).")
+    candidates, rej_area, rej_shape = process_contours(cnts)
+    
+    # ⚡ AUTO-RETRY: If Scan 1 fails to find a minimum cluster, try Scan 2 (Sensitive)
+    if len(candidates) < 4:
+        trace.append("Scan 1 failed. Retrying Scan 2: Sensitive Search...")
+        thresh2 = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 25, 5)
+        cnts2, _ = cv2.findContours(thresh2, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        candidates, ra2, rs2 = process_contours(cnts2)
+        rej_area += ra2; rej_shape += rs2
+
+    trace.append(f"Trace: Candidates={len(candidates)} (Rejected: Area={rej_area}, Shape={rej_shape})")
     
     best_cnt = None
     best_cluster = []
     pass_info = "Searching..."
 
     if len(candidates) >= 4:
-        # Cluster logic with center weighting
         max_score = 0
         avg_w = np.mean([np.sqrt(c['area']) for c in candidates])
-        threshold_dist = avg_w * 2.8
+        threshold_dist = avg_w * 3.2 # Increased neighbor reach
         pts = np.array([c['center'] for c in candidates])
         
         for i in range(len(candidates)):
@@ -172,15 +183,14 @@ def auto_detect_cube_face(image_bytes, expected_center, show_diag=False):
                 d = np.sqrt(np.sum((pts[i] - pts[j])**2))
                 if d < threshold_dist: cluster.append(candidates[j])
             
-            # Score = count * avg_weight (favors 9 stickers near center)
             score = len(cluster) * np.mean([c['weight'] for c in cluster])
-            if len(cluster) >= 7 and len(cluster) <= 10: score *= 2.0 # Sweet spot bonus
-            if len(cluster) == 9: score += 10 # Jackpot
+            if 6 <= len(cluster) <= 10: score *= 2.0
+            if len(cluster) == 9: score += 15
             
             if score > max_score:
                 max_score, best_cluster = score, cluster
         
-        trace.append(f"Locked primary cluster of {len(best_cluster)} stickers at core (Score={max_score:.1f}).")
+        trace.append(f"Locked primary cluster: {len(best_cluster)} stickers. Score={max_score:.1f}")
         
         if len(best_cluster) >= 4:
             cluster_pts = np.array([c['center'] for c in best_cluster])
