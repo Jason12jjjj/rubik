@@ -1,4 +1,5 @@
 import os, json
+from collections import Counter
 import streamlit as st
 import streamlit.components.v1 as components
 import numpy as np
@@ -76,6 +77,20 @@ html,body,[data-testid="stAppViewContainer"],[data-testid="stMain"]{
 .slbl{font-size:10px;color:#6b7280;margin-top:3px;}
 .scard-err .snum{color:#ef4444;}
 .scard-ok  .snum{color:#22c55e;}
+
+/* ── Solve-ready pulse ── */
+@keyframes pulse-green{
+  0%,100%{box-shadow:0 4px 15px rgba(34,197,94,.35);}
+  50%{box-shadow:0 4px 30px rgba(34,197,94,.7);}}
+.btn-solve-ready button{
+    background:linear-gradient(135deg,#22c55e,#16a34a)!important;
+    border:none!important; color:#fff!important;
+    animation:pulse-green 1.8s ease-in-out infinite;}
+
+/* ── centre-colour hint chip ── */
+.centre-hint{display:inline-flex;align-items:center;gap:6px;
+    background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;
+    padding:5px 12px;font-size:12px;font-weight:700;color:#15803d;}
 
 /* ── Solution box ── */
 .sol-box{background:linear-gradient(135deg,#f0fdf4,#dcfce7);
@@ -207,8 +222,9 @@ _DEFAULTS = {
     'history_index':  0,
     'cv_results':     None,
     'cv_samples':     [],
-    'scan_algo':      'A',       # selected algorithm key
-    'preview':        None,      # dict: {face,method,img_rgb,info}
+    'scan_algo':      'A',          # selected algorithm key
+    'preview':        None,         # dict: {face,method,img_rgb,det,issues,wrong_face}
+    'confirmed_faces': [],          # list (JSON-safe) of faces user has confirmed
 }
 
 if 'custom_std_colors' not in st.session_state and os.path.exists(CALIB_FILE):
@@ -223,11 +239,17 @@ for k, v in _DEFAULTS.items():
         st.session_state[k] = v
 
 if st.session_state.history is None:
-    st.session_state.history = [json.dumps(st.session_state.cube_state)]
+    st.session_state.history = [json.dumps({
+        "cube_state": st.session_state.cube_state,
+        "confirmed_faces": st.session_state.confirmed_faces
+    })]
 
 
 def push_history():
-    sj = json.dumps(st.session_state.cube_state)
+    sj = json.dumps({
+        "cube_state": st.session_state.cube_state,
+        "confirmed_faces": st.session_state.confirmed_faces
+    })
     if st.session_state.history_index < len(st.session_state.history)-1:
         st.session_state.history = st.session_state.history[:st.session_state.history_index+1]
     st.session_state.history.append(sj)
@@ -249,9 +271,20 @@ def hex_to_bgr(h):
     return (int(h[4:6],16), int(h[2:4],16), int(h[0:2],16))
 
 def count_moves(sol): return len(sol.strip().split())
+
 def face_complete(f):
-    s = st.session_state.cube_state[f]
-    return not all(s[i]=='White' for i in range(9) if i!=4)
+    """A face is 'done' when it has been explicitly confirmed by the user (scan or manual)."""
+    return f in st.session_state.get('confirmed_faces', [])
+
+def mark_confirmed(face):
+    cf = st.session_state.confirmed_faces
+    if face not in cf:
+        cf.append(face)
+
+def unmark_confirmed(face):
+    cf = st.session_state.confirmed_faces
+    if face in cf:
+        cf.remove(face)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -303,7 +336,7 @@ def run_method_a(raw_bytes, expected_center):
     std = get_std_colors()
     warped = _warp_to_300(img)
     detected = _grid_colors(warped, std, lambda b: classify_color_lab(b, std))
-    detected[4] = expected_center
+    # NOTE: do NOT force detected[4] here — caller validates and enforces centre
 
     # Debug overlay — grid lines + coloured circles at sample points
     debug = warped.copy()
@@ -402,7 +435,7 @@ def run_method_b(raw_bytes, expected_center):
     std = get_std_colors()
     warped = _warp_to_300(crop)
     detected = _grid_colors(warped, std, lambda b: classify_color_lab(b, std))
-    detected[4] = expected_center
+    # NOTE: do NOT force detected[4] — caller validates
 
     ann_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
     return detected, ann_rgb, None, model_info
@@ -440,7 +473,7 @@ def run_method_c(raw_bytes, expected_center):
                         cv2.FONT_HERSHEY_SIMPLEX,.45,txt_col,1)
             tile_imgs.append(cv2.cvtColor(ann, cv2.COLOR_BGR2RGB))
 
-    detected[4] = expected_center
+    # NOTE: do NOT force detected[4] — caller validates
 
     # Stitch 3×3 tile grid
     rows = [np.hstack(tile_imgs[r*3:(r+1)*3]) for r in range(3)]
@@ -529,6 +562,7 @@ with st.sidebar:
             st.session_state.cube_state = {f:(['White']*4+[CENTER_COLORS[f]]+['White']*4)for f in FACES}
             st.session_state.last_solution = None
             st.session_state.preview = None
+            st.session_state.confirmed_faces = []
             push_history(); st.rerun()
 
 
@@ -631,10 +665,19 @@ if app_mode == "🧩 Scan & Solve":
 
         # ── Photo Upload + Scan ──────────────────────────────────────────
         st.markdown('<div class="glass">', unsafe_allow_html=True)
-        st.markdown('<span class="slabel">📷 Photo Scan</span>', unsafe_allow_html=True)
+        ec_label = CENTER_COLORS[curr]
+        st.markdown(
+            f'<span class="slabel">📷 Photo Scan — '
+            f'{curr} Face</span>'
+            f'<div style="margin-bottom:8px;">'  
+            f'<span class="centre-hint">'
+            f'🎯 Expected centre: {COLOR_EMOJIS[ec_label]} <b>{ec_label}</b>'
+            f'</span></div>',
+            unsafe_allow_html=True)
 
         up_img = st.file_uploader(
-            "Drop image here", type=['jpg','png','jpeg'],
+            f"Upload {curr} face photo (centre sticker should be {ec_label})",
+            type=['jpg','png','jpeg'],
             key=f"up_{curr}_{algo_key}", label_visibility="collapsed")
 
         if up_img:
@@ -661,7 +704,7 @@ if app_mode == "🧩 Scan & Solve":
             if scan_clicked:
                 with st.spinner(f"Running {info['label']}…"):
                     try:
-                        ec = CENTER_COLORS[curr]         # expected centre colour
+                        ec = CENTER_COLORS[curr]   # expected centre colour for this face
                         extra_info = ""
 
                         if algo_key == "A":
@@ -675,32 +718,143 @@ if app_mode == "🧩 Scan & Solve":
 
                         if err:
                             st.error(err)
+                        elif det is None:
+                            st.error("❌ Detection returned no result.")
                         else:
-                            st.session_state.cube_state[curr] = det
-                            st.session_state.last_solution = None
-                            push_history()
+                            # ── VALIDATION ────────────────────────────────────
+                            raw_centre = det[4]       # what AI actually saw at centre
+                            issues     = []
+
+                            # 1. Centre-colour check
+                            wrong_face = None
+                            if raw_centre != ec:
+                                wrong_face = next(
+                                    (f for f, c in CENTER_COLORS.items() if c == raw_centre),
+                                    None)
+                                if wrong_face:
+                                    issues.append(
+                                        f"🔴 **Wrong face photographed!** "
+                                        f"AI detected a **{raw_centre}** centre "
+                                        f"(that is the **{wrong_face}** face). "
+                                        f"This slot expects the **{curr}** face "
+                                        f"(centre = {ec}).")
+                                else:
+                                    issues.append(
+                                        f"🟡 Centre sticker detected as **{raw_centre}** "
+                                        f"(expected **{ec}**). The image may be misaligned.")
+
+                            # 2. Dominant-colour sanity check (>7/9 same non-centre colour)
+                            from collections import Counter
+                            non_centre = [det[i] for i in range(9) if i != 4]
+                            freq = Counter(non_centre).most_common(1)[0]
+                            if freq[1] >= 7 and freq[0] != ec:
+                                issues.append(
+                                    f"🟡 **Unusual result:** 8 of 9 stickers detected as "
+                                    f"**{freq[0]}** — this could mean the camera was aimed "
+                                    f"at the wrong area, or lighting is affecting detection.")
+
+                            # 3. Duplicate-centre-colour guard
+                            # Prevent a face from containing the centre colour of a different face
+                            # in all 9 slots (a solved face of the wrong identity)
+                            all_same_wrong = all(s == raw_centre for s in det) and raw_centre != ec
+                            if all_same_wrong:
+                                issues.append(
+                                    f"🔴 All 9 stickers detected as {raw_centre} — "
+                                    f"this is physically impossible for the {curr} face.")
+
+                            # ── Store pending result + show validation UI ──────
+                            # Always enforce correct centre sticker (physical rule)
+                            det[4] = ec
                             st.session_state.preview = {
                                 "face": curr, "method": algo_key,
-                                "img_rgb": img_rgb, "info": extra_info}
-                            st.toast(f"✅ {curr} face scanned with Method {algo_key}!", icon="🎉")
+                                "img_rgb": img_rgb, "info": extra_info,
+                                "det": det, "issues": issues,
+                                "wrong_face": wrong_face}
+
                     except Exception as e:
                         st.error(f"❌ Detection error: {e}")
 
-            # Show detection preview (persists until next scan / navigation)
+            # ── Validation result UI ──────────────────────────────────────────
             prev = st.session_state.get("preview")
             if prev and prev["face"] == curr:
-                mk = prev["method"]
+                mk  = prev["method"]
+                issues     = prev.get("issues", [])
+                wrong_face = prev.get("wrong_face")
+
                 label_map = {"A":"OpenCV CIE-LAB — Sampling Grid",
                              "B":"YOLO — Bounding Box Detection",
                              "C":"CNN/MLP — Tile Classification Grid"}
+
+                # Detection image
                 st.markdown(
-                    f'<div class="det-frame">'
-                    f'<p class="slabel det-{mk.lower()}" style="margin:0 0 6px;">'
-                    f'🖼 {label_map.get(mk,"Result")}</p>'
-                    f'</div>', unsafe_allow_html=True)
+                    f'<span class="slabel det-{mk.lower()}">'
+                    f'🖼 {label_map.get(mk,"Detection Result")}</span>',
+                    unsafe_allow_html=True)
                 st.image(prev["img_rgb"], use_container_width=True)
                 if prev.get("info"):
                     st.caption(f"ℹ️ {prev['info']}")
+
+                # Validation messages
+                if issues:
+                    for msg in issues:
+                        if msg.startswith("🔴"):
+                            st.error(msg)
+                        else:
+                            st.warning(msg)
+
+                    # If wrong face → only show Retake button
+                    if wrong_face:
+                        st.markdown(
+                            f"<div style='background:#fef2f2;border:1px solid #fecaca;"
+                            f"border-radius:10px;padding:12px 16px;font-size:13px;color:#991b1b;"
+                            f"font-weight:600;margin:8px 0;'>⚠️ Please upload a photo of the "
+                            f"<b>{curr}</b> face (centre should show "
+                            f"<b>{CENTER_COLORS[curr]}</b>) and scan again.</div>",
+                            unsafe_allow_html=True)
+                        if st.button("🔄 Retake — clear result", use_container_width=True):
+                            st.session_state.preview = None
+                            st.rerun()
+                    else:
+                        # Minor warning — let user decide
+                        acc_col, rej_col = st.columns(2)
+                        with acc_col:
+                            if st.button("✅ Accept Anyway", type="primary",
+                                         use_container_width=True, key="acc_scan"):
+                                st.session_state.cube_state[curr] = prev["det"]
+                                st.session_state.last_solution = None
+                                mark_confirmed(curr)
+                                push_history()
+                                # Must clear preview before rerun to prevent re-commit
+                                st.session_state.preview = None
+                                st.toast("⚠️ Accepted — please review the grid carefully.",
+                                         icon="⚠️")
+                                st.rerun()
+                        with rej_col:
+                            if st.button("🔄 Retake", use_container_width=True, key="rej_scan",
+                                         help="Discard this scan result and try again"):
+                                st.session_state.preview = None
+                                st.rerun()
+                else:
+                    # All checks passed — auto-commit then advance to next face
+                    st.success(f"✅ **{curr} face validated!** Correct centre detected — moving to next face…")
+                    st.session_state.cube_state[curr] = prev["det"]
+                    st.session_state.last_solution = None
+                    mark_confirmed(curr)
+                    push_history()
+                    # Clear preview BEFORE rerun to avoid re-committing on next render
+                    st.session_state.preview = None
+                    # Auto-advance to next unconfirmed face
+                    remaining = [f for f in FACES if not face_complete(f) and f != curr]
+                    # After mark_confirmed above, curr is now confirmed
+                    # Re-check: remaining unconfirmed are faces not yet done
+                    remaining_after = [f for f in FACES
+                                       if f not in st.session_state.confirmed_faces]
+                    if remaining_after:
+                        next_face = remaining_after[0]
+                        st.session_state.active_face = next_face
+                        st.session_state.selected_color = CENTER_COLORS[next_face]
+                    st.toast(f"✅ {curr} face saved!", icon="🎉")
+                    st.rerun()
         else:
             st.markdown("""
             <div style='border:2px dashed #c7d2fe;border-radius:12px;padding:22px;
@@ -738,6 +892,7 @@ if app_mode == "🧩 Scan & Solve":
         def paint(face, idx):
             st.session_state.cube_state[face][idx] = st.session_state.selected_color
             st.session_state.last_solution = None
+            mark_confirmed(face)   # manual paint = user confirms this face
             push_history()
 
         for r in range(3):
@@ -746,23 +901,45 @@ if app_mode == "🧩 Scan & Solve":
                 idx = r*3+c
                 cv  = st.session_state.cube_state[curr][idx]
                 if idx == 4:
-                    rc[c].button(f"🔒{COLOR_EMOJIS[CENTER_COLORS[curr]]}",
-                                 disabled=True, use_container_width=True)
+                    # Centre is locked — show its colour name as tooltip
+                    rc[c].button(
+                        f"🔒 {COLOR_EMOJIS[CENTER_COLORS[curr]]}",
+                        disabled=True, use_container_width=True,
+                        help=f"Centre sticker is always {CENTER_COLORS[curr]} — locked",
+                    )
                 else:
-                    rc[c].button(f"{COLOR_EMOJIS[cv]}\n{cv}",
-                                 key=f"btn_{curr}_{idx}",
-                                 on_click=paint, args=(curr,idx),
-                                 use_container_width=True)
+                    rc[c].button(
+                        f"{COLOR_EMOJIS[cv]}  {cv}",
+                        key=f"btn_{curr}_{idx}",
+                        on_click=paint, args=(curr, idx),
+                        use_container_width=True,
+                        help="Click to paint with the active colour",
+                    )
 
-        fa1, fa2 = st.columns(2)
+        fa1, fa2, fa3 = st.columns(3)
         with fa1:
-            if st.button("🧹 Reset Face", use_container_width=True):
+            if st.button("🧹 Reset", use_container_width=True,
+                         help="Clear this face back to all-White"):
                 st.session_state.cube_state[curr] = ['White']*4+[CENTER_COLORS[curr]]+['White']*4
+                unmark_confirmed(curr)
                 push_history(); st.rerun()
         with fa2:
-            if st.button(f"🪣 Fill All → {COLOR_EMOJIS[sel]}", use_container_width=True):
+            if st.button(f"🪣 Fill", use_container_width=True,
+                         help=f"Paint all 8 stickers {sel}"):
                 st.session_state.cube_state[curr] = [sel]*4+[CENTER_COLORS[curr]]+[sel]*4
+                mark_confirmed(curr)
                 push_history(); st.rerun()
+        with fa3:
+            # Mark face as done without changing anything (useful for all-white Up face)
+            if face_complete(curr):
+                if st.button("✅ Done", use_container_width=True, disabled=True):
+                    pass
+            else:
+                if st.button("✔ Confirm", use_container_width=True,
+                             help="Mark this face as done without changing colours"):
+                    mark_confirmed(curr)
+                    st.toast(f"✅ {curr} face confirmed!", icon="✅")
+                    st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
 
     # ═══════════════════════ RIGHT COLUMN ══════════════════════════════════
@@ -777,15 +954,25 @@ if app_mode == "🧩 Scan & Solve":
         errors   = [c for c in inv if inv[c]!=9]
         is_ready = len(errors)==0
 
+        ok_cls  = lambda ok: 'scard-ok' if ok else ''
+        err_cls = lambda e:  'scard-err' if e else 'scard-ok'
         sc1, sc2, sc3, sc4 = st.columns(4)
-        sc1.markdown(f'<div class="scard"><div class="snum">54</div>'
-                     f'<div class="slbl">Total Stickers</div></div>', unsafe_allow_html=True)
-        sc2.markdown(f'<div class="scard {"scard-ok" if done_n==6 else ""}"><div class="snum">{done_n}/6</div>'
-                     f'<div class="slbl">Faces Scanned</div></div>', unsafe_allow_html=True)
-        sc3.markdown(f'<div class="scard {"scard-err" if errors else "scard-ok"}"><div class="snum">{len(errors)}</div>'
-                     f'<div class="slbl">Colour Errors</div></div>', unsafe_allow_html=True)
-        sc4.markdown(f'<div class="scard"><div class="snum">{st.session_state.history_index}</div>'
-                     f'<div class="slbl">Edits Made</div></div>', unsafe_allow_html=True)
+        sc1.markdown(
+            f'<div class="scard {ok_cls(done_n==6)}">'
+            f'<div class="snum">{done_n}/6</div>'
+            f'<div class="slbl">Faces Confirmed</div></div>', unsafe_allow_html=True)
+        sc2.markdown(
+            f'<div class="scard {err_cls(bool(errors))}">'
+            f'<div class="snum">{len(errors)}</div>'
+            f'<div class="slbl">Colour Errors</div></div>', unsafe_allow_html=True)
+        sc3.markdown(
+            f'<div class="scard">'
+            f'<div class="snum">{54 - sum(1 for s in all_stk if s=="White") + sum(1 for f in FACES if CENTER_COLORS[f]=="White")}</div>'
+            f'<div class="slbl">Filled Stickers</div></div>', unsafe_allow_html=True)
+        sc4.markdown(
+            f'<div class="scard">'
+            f'<div class="snum">{st.session_state.history_index}</div>'
+            f'<div class="slbl">Edits Made</div></div>', unsafe_allow_html=True)
 
         st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
         ud1, ud2 = st.columns(2)
@@ -794,16 +981,26 @@ if app_mode == "🧩 Scan & Solve":
                          disabled=st.session_state.history_index<=0,
                          use_container_width=True):
                 st.session_state.history_index -= 1
-                st.session_state.cube_state = json.loads(
-                    st.session_state.history[st.session_state.history_index])
+                data = json.loads(st.session_state.history[st.session_state.history_index])
+                if isinstance(data, dict) and 'cube_state' in data:
+                    st.session_state.cube_state = data['cube_state']
+                    st.session_state.confirmed_faces = data.get('confirmed_faces', [])
+                else:
+                    st.session_state.cube_state = data
+                st.session_state.preview = None
                 st.rerun()
         with ud2:
             if st.button("Redo ⏩",
                          disabled=st.session_state.history_index>=len(st.session_state.history)-1,
                          use_container_width=True):
                 st.session_state.history_index += 1
-                st.session_state.cube_state = json.loads(
-                    st.session_state.history[st.session_state.history_index])
+                data = json.loads(st.session_state.history[st.session_state.history_index])
+                if isinstance(data, dict) and 'cube_state' in data:
+                    st.session_state.cube_state = data['cube_state']
+                    st.session_state.confirmed_faces = data.get('confirmed_faces', [])
+                else:
+                    st.session_state.cube_state = data
+                st.session_state.preview = None
                 st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -812,14 +1009,31 @@ if app_mode == "🧩 Scan & Solve":
         st.markdown('<span class="slabel">🚀 Kociemba Two-Phase Solver</span>', unsafe_allow_html=True)
 
         if errors:
-            err_txt = " · ".join(f"{COLOR_EMOJIS[c]} {inv[c]}/9" for c in errors)
-            st.warning(f"**Inventory mismatch:** {err_txt}\n\nFill all 6 faces before solving.")
+            # Friendly per-colour breakdown
+            lines = []
+            for c in errors:
+                diff = inv[c] - 9
+                if diff > 0:
+                    lines.append(f"  • {COLOR_EMOJIS[c]} **{c}**: {inv[c]}/9 — {diff} too many")
+                else:
+                    lines.append(f"  • {COLOR_EMOJIS[c]} **{c}**: {inv[c]}/9 — {abs(diff)} too few")
+            st.warning(
+                "**Inventory mismatch** — each colour must appear exactly 9 times:\n"
+                + "\n".join(lines)
+                + "\n\n💡 *Tip: Scan or paint the remaining faces, or use Undo to fix mistakes.*")
 
-        if st.button("✨ SOLVE CUBE" if is_ready else "⚠️ Fix Inventory First",
-                     type="primary" if is_ready else "secondary",
-                     use_container_width=True):
+        # Wrap in div so CSS can target the button when ready
+        solve_wrap = 'btn-solve-ready' if is_ready else ''
+        st.markdown(f'<div class="{solve_wrap}">', unsafe_allow_html=True)
+        solve_clicked = st.button(
+            "✨ SOLVE CUBE" if is_ready else "⚠️ Complete All Faces First",
+            type="primary" if is_ready else "secondary",
+            use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+        if solve_clicked:
             if not is_ready:
-                st.error(f"{len(errors)} colour(s) have wrong counts. Complete all faces first.")
+                st.error(f"Cannot solve yet — {len(errors)} colour(s) have incorrect counts.\n\n"
+                         "Scan or paint all 6 faces so each colour appears exactly 9 times.")
             else:
                 with st.spinner("Running Kociemba algorithm…"):
                     try:
